@@ -263,6 +263,12 @@ class MoreRobAccountsUI(tk.Tk):
         else:
             self.manual_var = tk.BooleanVar(value=False)
             self.new_cookie_var = tk.StringVar()
+            ttk.Label(
+                add_frame,
+                text="Inicia sesion en la ventana que se abre. No cierres el navegador hasta ver el mensaje de exito.",
+                style="CardMuted.TLabel",
+                wraplength=560,
+            ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         # Lista de cuentas (expandible)
         acc = ttk.LabelFrame(body, text=" Cuentas ", style="Card.TLabelframe", padding=self.CARD_PAD)
@@ -385,11 +391,14 @@ class MoreRobAccountsUI(tk.Tk):
             return
 
         browser_hint = "Microsoft Edge" if sys.platform == "win32" else "el navegador"
+        self.status_var.set(f"Abriendo {browser_hint}...")
 
         def worker() -> None:
             cookie, username, error = login_via_browser(timeout_sec=300)
             if error or not cookie:
-                self.after(0, lambda: messagebox.showerror("Inicio de sesion", error or "Sin sesion."))
+                err = error or "Sin sesion."
+                self.after(0, lambda e=err: messagebox.showerror("Inicio de sesion", e))
+                self.after(0, lambda: self.status_var.set("Error al iniciar sesion."))
                 self.after(0, lambda: self._set_buttons_running(False))
                 return
 
@@ -398,15 +407,12 @@ class MoreRobAccountsUI(tk.Tk):
             def save_on_main() -> None:
                 if self._save_account(display_name, cookie):
                     messagebox.showinfo("Listo", f"Cuenta '{display_name}' guardada cifrada.")
+                    self.status_var.set(f"Cuenta '{display_name}' agregada.")
                 self._set_buttons_running(False)
 
             self.after(0, save_on_main)
 
         self._set_buttons_running(True)
-        messagebox.showinfo(
-            "Iniciar sesion",
-            f"Se abrira {browser_hint}.\nInicia sesion en Roblox y espera unos segundos.",
-        )
         threading.Thread(target=worker, daemon=True).start()
 
     def add_account_manual(self) -> None:
