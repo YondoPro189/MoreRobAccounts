@@ -1,5 +1,8 @@
-import threading
+import json
+import os
+import subprocess
 import sys
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -7,13 +10,35 @@ import launcher
 from security import SecurityError
 
 try:
-    from secure_login import is_browser_login_available, login_via_browser
+    from secure_login import (
+        LOGIN_WORKER_FLAG,
+        get_login_result_path,
+        is_browser_login_available,
+        is_browser_login_worker_argv,
+        login_via_browser,
+        read_login_result,
+        run_browser_login_worker,
+    )
 except ImportError:
+
+    LOGIN_WORKER_FLAG = "--browser-login-worker"
 
     def is_browser_login_available() -> bool:
         return False
 
     def login_via_browser(**kwargs):
+        return None, None, "Modulo secure_login no disponible."
+
+    def is_browser_login_worker_argv(argv=None) -> bool:
+        return False
+
+    def get_login_result_path() -> str:
+        return os.path.join(launcher.get_app_dir(), "_login_result.json")
+
+    def run_browser_login_worker(result_path: str) -> int:
+        return 1
+
+    def read_login_result(result_path: str):
         return None, None, "Modulo secure_login no disponible."
 
 
@@ -112,6 +137,8 @@ class MoreRobAccountsUI(tk.Tk):
 
         self.accounts: list[dict] = load_accounts_ui()
         self._worker_thread: threading.Thread | None = None
+        self._login_proc: subprocess.Popen | None = None
+        self._login_result_path: str | None = None
 
         self._setup_theme()
         self._build_ui()
@@ -392,28 +419,67 @@ class MoreRobAccountsUI(tk.Tk):
 
         browser_hint = "Microsoft Edge" if sys.platform == "win32" else "el navegador"
         self.status_var.set(f"Abriendo {browser_hint}...")
+        self._set_buttons_running(True)
 
+        if launcher.is_frozen_app():
+            self._start_browser_login_subprocess()
+        else:
+            self._start_browser_login_thread()
+
+    def _finish_browser_login(self, cookie: str | None, username: str | None, error: str | None) -> None:
+        if error or not cookie:
+            messagebox.showerror("Inicio de sesion", error or "Sin sesion.")
+            self.status_var.set("Error al iniciar sesion.")
+            self._set_buttons_running(False)
+            return
+
+        display_name = self.new_name_var.get().strip() or (username or "Cuenta")
+        if self._save_account(display_name, cookie):
+            messagebox.showinfo("Listo", f"Cuenta '{display_name}' guardada cifrada.")
+            self.status_var.set(f"Cuenta '{display_name}' agregada.")
+        self._set_buttons_running(False)
+
+    def _start_browser_login_thread(self) -> None:
         def worker() -> None:
             cookie, username, error = login_via_browser(timeout_sec=300)
-            if error or not cookie:
-                err = error or "Sin sesion."
-                self.after(0, lambda e=err: messagebox.showerror("Inicio de sesion", e))
-                self.after(0, lambda: self.status_var.set("Error al iniciar sesion."))
-                self.after(0, lambda: self._set_buttons_running(False))
-                return
+            self.after(0, lambda: self._finish_browser_login(cookie, username, error))
 
-            display_name = self.new_name_var.get().strip() or (username or "Cuenta")
-
-            def save_on_main() -> None:
-                if self._save_account(display_name, cookie):
-                    messagebox.showinfo("Listo", f"Cuenta '{display_name}' guardada cifrada.")
-                    self.status_var.set(f"Cuenta '{display_name}' agregada.")
-                self._set_buttons_running(False)
-
-            self.after(0, save_on_main)
-
-        self._set_buttons_running(True)
         threading.Thread(target=worker, daemon=True).start()
+
+    def _start_browser_login_subprocess(self) -> None:
+        result_path = get_login_result_path()
+        self._login_result_path = result_path
+        try:
+            if os.path.isfile(result_path):
+                os.remove(result_path)
+        except OSError:
+            pass
+
+        try:
+            self._login_proc = subprocess.Popen(
+                [sys.executable, LOGIN_WORKER_FLAG, result_path],
+                cwd=launcher.get_app_dir(),
+            )
+        except OSError as exc:
+            self._finish_browser_login(None, None, f"No se pudo iniciar el login:\n{exc}")
+            return
+
+        self.after(400, self._poll_browser_login_subprocess)
+
+    def _poll_browser_login_subprocess(self) -> None:
+        if self._login_proc is not None and self._login_proc.poll() is None:
+            self.after(400, self._poll_browser_login_subprocess)
+            return
+
+        result_path = self._login_result_path or get_login_result_path()
+        try:
+            cookie, username, error = read_login_result(result_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            cookie, username, error = None, None, f"Error leyendo resultado del login:\n{exc}"
+
+        self._login_proc = None
+        self._login_result_path = None
+        self._finish_browser_login(cookie, username, error)
 
     def add_account_manual(self) -> None:
         name = self.new_name_var.get().strip()
@@ -459,15 +525,17 @@ class MoreRobAccountsUI(tk.Tk):
 
     def _set_buttons_running(self, running: bool) -> None:
         state = "disabled" if running else "normal"
-        for btn in (
-            self.launch_selected_btn,
-            self.launch_all_btn,
-            self.reload_btn,
-            self.add_account_btn,
-            self.login_browser_btn,
-            self.delete_account_btn,
+        for attr in (
+            "launch_selected_btn",
+            "launch_all_btn",
+            "reload_btn",
+            "login_browser_btn",
+            "delete_account_btn",
+            "add_account_btn",
         ):
-            btn.configure(state=state)
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.configure(state=state)
 
     def _start_worker(self, accounts: list[dict]) -> None:
         place_id = self.place_var.get().strip() or "0"
@@ -501,5 +569,7 @@ class MoreRobAccountsUI(tk.Tk):
 
 
 if __name__ == "__main__":
+    if is_browser_login_worker_argv():
+        raise SystemExit(run_browser_login_worker(sys.argv[2]))
     app = MoreRobAccountsUI()
     app.mainloop()

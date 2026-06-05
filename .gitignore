@@ -5,5 +5,7 @@ __pycache__/
 build/
 dist/
 release/
+_login_result.json
+login_debug.log
 *.spec
 .venv/

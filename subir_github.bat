@@ -7,7 +7,7 @@ REM Puedes: editar aqui, o antes en CMD: set GITHUB_USER=tuusuario
 if not defined GITHUB_USER set GITHUB_USER=YondoPro189
 if not "%~1"=="" set GITHUB_USER=%~1
 set REPO_NAME=MoreRobAccounts
-set VERSION=1.0.2
+set VERSION=1.0.3
 set TAG=v%VERSION%
 
 set ZIP=release\MoreRobAccounts-v%VERSION%-win64.zip
