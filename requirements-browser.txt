@@ -1,0 +1,2 @@
+# Dependencias extra para inicio de sesion seguro (navegador embebido)
+playwright>=1.40.0

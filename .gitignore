@@ -1,0 +1,9 @@
+accounts.json
+dist/accounts.json
+__pycache__/
+*.pyc
+build/
+dist/
+release/
+*.spec
+.venv/

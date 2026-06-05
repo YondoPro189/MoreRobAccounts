@@ -1,0 +1,38 @@
+MoreRobAccounts - Lanzador multi-cuenta de Roblox
+==================================================
+
+REQUISITOS
+----------
+- Windows 10 u 11 (64 bits)
+- Roblox instalado en la PC
+
+INSTALACION
+-----------
+1. Descomprime esta carpeta donde quieras (Escritorio, Documentos, etc.)
+2. Abre MoreRobAccountsUI.exe
+3. NO muevas solo el .exe: deja accounts.json en la misma carpeta
+
+PRIMER USO
+----------
+1. Pon el Place ID del juego (numero del link de Roblox)
+2. Agrega tus cuentas:
+   - Boton "Iniciar sesion con Roblox" (recomendado)
+   - O activa "Pegar cookie (avanzado)" si el login por navegador falla
+3. Selecciona cuentas y pulsa "Lanzar todas" o "Seleccionadas"
+
+IMPORTANTE
+----------
+- Las sesiones se guardan CIFRADAS en accounts.json (solo tu usuario de Windows puede leerlas)
+- Nunca compartas tu accounts.json con nadie
+- Mantén esta ventana abierta mientras juegas (el launcher mantiene varias instancias abiertas)
+- Si Windows SmartScreen advierte sobre el archivo: es normal en apps sin firma digital.
+  Elige "Mas informacion" > "Ejecutar de todas formas" si confias en la fuente
+
+ANTIVIRUS
+---------
+Algunos antivirus marcan falsos positivos apps hechas con PyInstaller.
+Si descargaste de una fuente confiable, puedes agregar una excepcion.
+
+SOPORTE / CODIGO FUENTE
+-------------------------
+Si tienes el codigo fuente, puedes ejecutar: python ui.py
