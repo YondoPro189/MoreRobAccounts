@@ -15,6 +15,7 @@ DEFAULT_SETTINGS = {
     "launch_delay_sec": 3,
     "delay_after_accounts": 3,
     "auth_max_retries": 2,
+    "use_family_place_id": True,
 }
 
 
@@ -37,12 +38,14 @@ def default_app_data() -> dict:
 def _normalize_settings(raw: dict | None) -> dict:
     settings = deepcopy(DEFAULT_SETTINGS)
     if isinstance(raw, dict):
-        for key in DEFAULT_SETTINGS:
+        for key in ("launch_delay_sec", "delay_after_accounts", "auth_max_retries"):
             if key in raw:
                 try:
-                    settings[key] = max(0, int(raw[key]))
+                    settings[key] = int(raw[key])
                 except (TypeError, ValueError):
                     pass
+        if "use_family_place_id" in raw:
+            settings["use_family_place_id"] = bool(raw["use_family_place_id"])
     settings["auth_max_retries"] = max(1, min(5, settings["auth_max_retries"]))
     settings["launch_delay_sec"] = max(0, min(60, settings["launch_delay_sec"]))
     settings["delay_after_accounts"] = max(1, min(20, settings["delay_after_accounts"]))

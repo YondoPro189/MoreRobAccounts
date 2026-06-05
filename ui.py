@@ -229,10 +229,22 @@ class MoreRobAccountsUI(tk.Tk):
         ttk.Button(fam_row, text="Lanzar Familia", style="Accent.TButton", command=self.launch_family).grid(row=0, column=2, padx=2)
         ttk.Button(fam_row, text="Gestionar", command=self.manage_families).grid(row=0, column=3, padx=2)
 
+        self.use_family_place_var = tk.BooleanVar(
+            value=bool(self.settings.get("use_family_place_id", True))
+        )
+        self.family_place_switch = ttk.Checkbutton(
+            cfg,
+            text="Lanzar familia con Place ID de la familia",
+            variable=self.use_family_place_var,
+            command=self._on_family_place_switch_changed,
+        )
+        self.family_place_switch.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self._update_family_place_switch_label()
+
         self.debug_var = tk.BooleanVar(value=False)
         self.validate_before_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(cfg, text="Debug", variable=self.debug_var).grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(cfg, text="Validar antes de lanzar", variable=self.validate_before_var).grid(row=3, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(cfg, text="Debug", variable=self.debug_var).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(cfg, text="Validar antes de lanzar", variable=self.validate_before_var).grid(row=4, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
         add_frame = ttk.LabelFrame(top, text=" Agregar cuenta ", style="Card.TLabelframe", padding=self.CARD_PAD)
         add_frame.grid(row=1, column=0, sticky="ew")
@@ -354,7 +366,20 @@ class MoreRobAccountsUI(tk.Tk):
         except ValueError:
             sec = 3
         self.settings["launch_delay_sec"] = sec
+        self.settings["use_family_place_id"] = bool(self.use_family_place_var.get())
         app_storage.save_settings(self.settings)
+
+    def _on_family_place_switch_changed(self) -> None:
+        self._update_family_place_switch_label()
+        self.settings["use_family_place_id"] = bool(self.use_family_place_var.get())
+        app_storage.save_settings(self.settings)
+
+    def _update_family_place_switch_label(self) -> None:
+        if self.use_family_place_var.get():
+            text = "Lanzar familia: Place ID de la familia"
+        else:
+            text = "Lanzar familia: Place ID del campo superior"
+        self.family_place_switch.configure(text=text)
 
     def _refresh_accounts_list(self) -> None:
         self.accounts_list.delete(0, tk.END)
@@ -683,8 +708,21 @@ class MoreRobAccountsUI(tk.Tk):
         if not accounts:
             messagebox.showwarning("Aviso", f"La familia '{fam_name}' no tiene cuentas validas.")
             return
-        place_id = family.get("place_id", "0")
-        self.place_var.set(place_id)
+
+        if self.use_family_place_var.get():
+            place_id = family.get("place_id", "0")
+            source = "familia"
+        else:
+            place_id = self.place_var.get().strip() or "0"
+            source = "campo Place ID"
+
+        if place_id == "0":
+            if not messagebox.askyesno(
+                "Place ID 0",
+                f"Place ID es 0 (origen: {source}).\n¿Continuar igual?",
+            ):
+                return
+
         self._start_worker(accounts, place_id=place_id)
 
 

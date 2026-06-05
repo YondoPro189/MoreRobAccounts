@@ -5,8 +5,22 @@ Lanzador multi-cuenta de Roblox para Windows. Abre varias instancias simultánea
 ## Descargar (usuarios)
 
 1. Ve a **[Releases](https://github.com/YondoPro189/MoreRobAccounts/releases)**.
-2. Descarga **`MoreRobAccounts-v1.0-win64.zip`** (versión completa, ~52 MB).
+2. Descarga **`MoreRobAccounts-v2.0.0-win64.zip`** (versión completa, ~50 MB).
 3. Descomprime y ejecuta **`MoreRobAccountsUI.exe`**.
+
+### Novedades 2.0
+
+- **Familias** — agrupa cuentas + Place ID → botón **Lanzar Familia**
+- **Historial de Place ID**
+- **Grupos** por cuenta (Farm, Principal, etc.)
+- **Comprobar / renovar sesiones** (inválidas en rojo)
+- **Barra de progreso** y **notificaciones Windows**
+- **Delay configurable** si lanzas más de 3 cuentas (3 s por defecto)
+
+### Instalador (opcional)
+
+Compila el instalador con [Inno Setup 6](https://jrsoftware.org/isinfo.php) y `build_installer.bat`.
+Genera `MoreRobAccounts-Setup-2.0.0-win64.exe`.
 
 ### Agregar cuentas (sin cookies manuales)
 

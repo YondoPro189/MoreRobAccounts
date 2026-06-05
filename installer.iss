@@ -2,7 +2,7 @@
 ; Requiere Inno Setup 6: https://jrsoftware.org/isinfo.php
 
 #define AppName "MoreRobAccounts"
-#define AppVersion "2.0.0"
+#define AppVersion "2.0.1"
 #define AppPublisher "YondoPro189"
 #define AppURL "https://github.com/YondoPro189/MoreRobAccounts"
 #define AppExe "MoreRobAccountsUI.exe"
