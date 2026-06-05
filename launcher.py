@@ -47,6 +47,26 @@ def is_frozen_app() -> bool:
     return getattr(sys, "frozen", False)
 
 
+def get_icon_path(ext: str = "ico") -> str | None:
+    """Ruta a assets/icon.ico o icon.png (desarrollo o empaquetado)."""
+    name = f"icon.{ext.lower().lstrip('.')}"
+    candidates: list[str] = []
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(os.path.join(meipass, "assets", name))
+        candidates.append(os.path.join(get_app_dir(), "assets", name))
+
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(project_dir, "assets", name))
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def get_accounts_file() -> str:
     return os.path.join(get_app_dir(), "accounts.json")
 

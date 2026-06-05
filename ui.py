@@ -139,10 +139,28 @@ class MoreRobAccountsUI(tk.Tk):
         self._worker_thread: threading.Thread | None = None
         self._login_proc: subprocess.Popen | None = None
         self._login_result_path: str | None = None
+        self._window_icon: tk.PhotoImage | None = None
 
         self._setup_theme()
+        self._set_window_icon()
         self._build_ui()
         self._refresh_accounts_list()
+
+    def _set_window_icon(self) -> None:
+        icon_ico = launcher.get_icon_path("ico")
+        if icon_ico and sys.platform == "win32":
+            try:
+                self.iconbitmap(default=icon_ico)
+            except tk.TclError:
+                pass
+
+        icon_png = launcher.get_icon_path("png")
+        if icon_png:
+            try:
+                self._window_icon = tk.PhotoImage(file=icon_png)
+                self.iconphoto(True, self._window_icon)
+            except tk.TclError:
+                pass
 
     def _setup_theme(self) -> None:
         style = ttk.Style(self)

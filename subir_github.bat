@@ -7,7 +7,7 @@ REM Puedes: editar aqui, o antes en CMD: set GITHUB_USER=tuusuario
 if not defined GITHUB_USER set GITHUB_USER=YondoPro189
 if not "%~1"=="" set GITHUB_USER=%~1
 set REPO_NAME=MoreRobAccounts
-set VERSION=1.0.3
+set VERSION=1.0.4
 set TAG=v%VERSION%
 
 set ZIP=release\MoreRobAccounts-v%VERSION%-win64.zip
@@ -109,7 +109,7 @@ gh release view %TAG% >nul 2>&1
 if errorlevel 1 (
     gh release create %TAG% "%ZIP%" ^
         --title "MoreRobAccounts v%VERSION%" ^
-        --notes "Corrige login por navegador (Edge/Chrome). Inicia sesion con Roblox sin copiar cookies. Descomprime el ZIP y ejecuta MoreRobAccountsUI.exe."
+        --notes "Icono personalizado, login por navegador corregido (v1.0.3), Edge/Chrome. Descomprime el ZIP y ejecuta MoreRobAccountsUI.exe."
 ) else (
     echo La release %TAG% ya existe. Subiendo/actualizando el ZIP...
     gh release upload %TAG% "%ZIP%" --clobber
