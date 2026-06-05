@@ -1,4 +1,5 @@
 import threading
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -238,26 +239,30 @@ class MoreRobAccountsUI(tk.Tk):
         )
         self.login_browser_btn.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
-        self.manual_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            add_frame,
-            text="Pegar cookie (avanzado)",
-            variable=self.manual_var,
-            command=self._toggle_manual_cookie,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        if not launcher.is_frozen_app():
+            self.manual_var = tk.BooleanVar(value=False)
+            ttk.Checkbutton(
+                add_frame,
+                text="Pegar cookie (avanzado)",
+                variable=self.manual_var,
+                command=self._toggle_manual_cookie,
+            ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
-        self.manual_frame = ttk.Frame(add_frame, style="Card.TFrame")
-        self.manual_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.manual_frame.columnconfigure(1, weight=1)
+            self.manual_frame = ttk.Frame(add_frame, style="Card.TFrame")
+            self.manual_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            self.manual_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(self.manual_frame, text="Cookie", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        self.new_cookie_var = tk.StringVar()
-        ttk.Entry(self.manual_frame, textvariable=self.new_cookie_var, show="*").grid(
-            row=0, column=1, sticky="ew", padx=(8, 0)
-        )
-        self.add_account_btn = ttk.Button(self.manual_frame, text="Guardar", command=self.add_account_manual)
-        self.add_account_btn.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
-        self.manual_frame.grid_remove()
+            ttk.Label(self.manual_frame, text="Cookie", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+            self.new_cookie_var = tk.StringVar()
+            ttk.Entry(self.manual_frame, textvariable=self.new_cookie_var, show="*").grid(
+                row=0, column=1, sticky="ew", padx=(8, 0)
+            )
+            self.add_account_btn = ttk.Button(self.manual_frame, text="Guardar", command=self.add_account_manual)
+            self.add_account_btn.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
+            self.manual_frame.grid_remove()
+        else:
+            self.manual_var = tk.BooleanVar(value=False)
+            self.new_cookie_var = tk.StringVar()
 
         # Lista de cuentas (expandible)
         acc = ttk.LabelFrame(body, text=" Cuentas ", style="Card.TLabelframe", padding=self.CARD_PAD)
@@ -336,6 +341,8 @@ class MoreRobAccountsUI(tk.Tk):
         self._refresh_accounts_list()
 
     def _toggle_manual_cookie(self) -> None:
+        if launcher.is_frozen_app():
+            return
         if self.manual_var.get():
             self.manual_frame.grid()
         else:
@@ -362,12 +369,22 @@ class MoreRobAccountsUI(tk.Tk):
 
     def login_with_browser(self) -> None:
         if not is_browser_login_available():
-            messagebox.showinfo(
-                "Instalar Playwright",
-                "pip install -r requirements-browser.txt\n"
-                "python -m playwright install chromium",
-            )
+            if launcher.is_frozen_app():
+                messagebox.showerror(
+                    "Login no disponible",
+                    "Esta es la version LITE sin login por navegador.\n\n"
+                    "Descarga la version COMPLETA desde GitHub Releases:\n"
+                    "MoreRobAccounts-v1.0-win64.zip",
+                )
+            else:
+                messagebox.showinfo(
+                    "Instalar Playwright",
+                    "pip install -r requirements-browser.txt\n"
+                    "python -m playwright install chromium",
+                )
             return
+
+        browser_hint = "Microsoft Edge" if sys.platform == "win32" else "el navegador"
 
         def worker() -> None:
             cookie, username, error = login_via_browser(timeout_sec=300)
@@ -386,7 +403,10 @@ class MoreRobAccountsUI(tk.Tk):
             self.after(0, save_on_main)
 
         self._set_buttons_running(True)
-        messagebox.showinfo("Iniciar sesion", "Inicia sesion en la ventana de Chromium.")
+        messagebox.showinfo(
+            "Iniciar sesion",
+            f"Se abrira {browser_hint}.\nInicia sesion en Roblox y espera unos segundos.",
+        )
         threading.Thread(target=worker, daemon=True).start()
 
     def add_account_manual(self) -> None:

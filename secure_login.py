@@ -10,12 +10,20 @@ Requisito opcional:
 
 from __future__ import annotations
 
+import sys
 import time
 
 import requests
 
 ROBLOX_LOGIN_URL = "https://www.roblox.com/login"
 AUTH_CHECK_URL = "https://users.roblox.com/v1/users/authenticated"
+
+
+def _browser_launch_channels() -> tuple[str | None, ...]:
+    """En Windows usa Edge del sistema (viene instalado); no hace falta Chromium."""
+    if sys.platform == "win32":
+        return ("msedge", None)
+    return (None, "msedge")
 
 
 def is_browser_login_available() -> bool:
@@ -75,8 +83,7 @@ def login_via_browser(*, timeout_sec: int = 300) -> tuple[str | None, str | None
         with sync_playwright() as playwright:
             launch_errors: list[str] = []
 
-            # Chromium de Playwright primero; Edge solo si no tienes Chromium instalado.
-            for channel in (None, "msedge"):
+            for channel in _browser_launch_channels():
                 try:
                     if channel:
                         browser = playwright.chromium.launch(
@@ -91,10 +98,11 @@ def login_via_browser(*, timeout_sec: int = 300) -> tuple[str | None, str | None
                     browser = None
 
             if browser is None:
-                hint = (
-                    "No se pudo abrir el navegador.\n"
-                    "Prueba: playwright install chromium"
-                )
+                hint = "No se pudo abrir el navegador."
+                if sys.platform == "win32":
+                    hint += "\nAsegurate de tener Microsoft Edge instalado."
+                else:
+                    hint += "\nPrueba: playwright install chromium"
                 if launch_errors:
                     hint += f"\n\nDetalle: {launch_errors[-1]}"
                 return None, None, hint

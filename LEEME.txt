@@ -5,6 +5,7 @@ REQUISITOS
 ----------
 - Windows 10 u 11 (64 bits)
 - Roblox instalado en la PC
+- Microsoft Edge (viene con Windows)
 
 INSTALACION
 -----------
@@ -15,10 +16,12 @@ INSTALACION
 PRIMER USO
 ----------
 1. Pon el Place ID del juego (numero del link de Roblox)
-2. Agrega tus cuentas:
-   - Boton "Iniciar sesion con Roblox" (recomendado)
-   - O activa "Pegar cookie (avanzado)" si el login por navegador falla
-3. Selecciona cuentas y pulsa "Lanzar todas" o "Seleccionadas"
+2. Pulsa "Iniciar sesion con Roblox"
+3. Inicia sesion en la ventana de Edge que se abre
+4. La cuenta se guarda sola (cifrada). Repite para cada cuenta.
+5. Selecciona cuentas y pulsa "Lanzar todas" o "Seleccionadas"
+
+NO necesitas copiar cookies ni usar DevTools (F12).
 
 IMPORTANTE
 ----------
@@ -35,4 +38,4 @@ Si descargaste de una fuente confiable, puedes agregar una excepcion.
 
 SOPORTE / CODIGO FUENTE
 -------------------------
-Si tienes el codigo fuente, puedes ejecutar: python ui.py
+https://github.com/YondoPro189/MoreRobAccounts

@@ -43,6 +43,10 @@ def get_app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def is_frozen_app() -> bool:
+    return getattr(sys, "frozen", False)
+
+
 def get_accounts_file() -> str:
     return os.path.join(get_app_dir(), "accounts.json")
 

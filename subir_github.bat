@@ -80,9 +80,21 @@ echo === Subiendo codigo fuente ===
 git add .
 git diff --cached --quiet
 if errorlevel 1 (
-    git commit -m "MoreRobAccounts v%VERSION%"
+    git -c user.name="%GITHUB_USER%" -c user.email="%GITHUB_USER%@users.noreply.github.com" commit -m "MoreRobAccounts v%VERSION%"
+    if errorlevel 1 (
+        echo Error al crear el commit.
+        pause
+        exit /b 1
+    )
 ) else (
     echo Sin cambios nuevos en el codigo.
+)
+
+git rev-parse --verify main >nul 2>&1
+if errorlevel 1 (
+    echo No hay commits en la rama main. Revisa los errores anteriores.
+    pause
+    exit /b 1
 )
 
 git push -u origin main

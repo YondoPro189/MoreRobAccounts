@@ -1,52 +1,76 @@
 # MoreRobAccounts
 
-Lanzador multi-cuenta de Roblox para Windows. Permite abrir varias instancias simultáneas, cada una autenticada con una cuenta distinta.
+Lanzador multi-cuenta de Roblox para Windows. Abre varias instancias simultáneas, cada una con una cuenta distinta.
 
-## Requisitos
+## Descargar (usuarios)
 
-- Windows 10/11
-- Python 3.10+ → https://www.python.org/downloads/
+1. Ve a **[Releases](https://github.com/YondoPro189/MoreRobAccounts/releases)**.
+2. Descarga **`MoreRobAccounts-v1.0-win64.zip`** (versión completa, ~52 MB).
+3. Descomprime y ejecuta **`MoreRobAccountsUI.exe`**.
+
+### Agregar cuentas (sin cookies manuales)
+
+1. Abre la app y pon el **Place ID** del juego.
+2. Pulsa **"Iniciar sesión con Roblox"**.
+3. Inicia sesión en la ventana de **Microsoft Edge** que se abre.
+4. La cuenta se guarda cifrada automáticamente. Repite para cada cuenta.
+
+No necesitas copiar cookies ni abrir DevTools.
+
+> Descarga la versión **completa** (`MoreRobAccounts-v1.0-win64.zip`), no la LITE. La LITE es solo para Discord y requiere pegar cookies manualmente.
+
+### Requisitos
+
+- Windows 10/11 (64 bits)
+- Roblox instalado
+- Microsoft Edge (viene con Windows)
+
+---
+
+## Desarrollo (desde código fuente)
+
+### Requisitos
+
+- Python 3.10+
 - Roblox instalado
 
-## Instalación
+### Instalación
 
 ```bat
 pip install -r requirements.txt
+pip install -r requirements-browser.txt
+python -m playwright install chromium
 ```
 
-## Cómo obtener tu cookie `.ROBLOSECURITY`
+### Ejecutar la interfaz
 
-1. Abre [roblox.com](https://www.roblox.com) en tu navegador e inicia sesión.
-2. Pulsa **F12** para abrir DevTools.
-3. Ve a **Application** → **Cookies** → `https://www.roblox.com`.
-4. Copia el valor de `.ROBLOSECURITY` (empieza con `_|WARNING...`).
-
-> ⚠️ **Nunca compartas esta cookie con nadie.** Es equivalente a tu contraseña.
-
-## Uso
-
-### Agregar una cuenta
 ```bat
-python launcher.py --add
+python ui.py
 ```
 
-### Ver cuentas guardadas
+### Compilar ejecutable
+
 ```bat
-python launcher.py --list
+make_release.bat
 ```
 
-### Lanzar todas las cuentas
+Genera `release\MoreRobAccounts-v1.0-win64.zip` listo para distribuir.
+
+---
+
+## Uso por línea de comandos
+
 ```bat
-python launcher.py
+python launcher.py --add              # agregar cuenta (navegador)
+python launcher.py --list             # listar cuentas
+python launcher.py                    # lanzar todas
+python launcher.py --account C1 C2    # lanzar cuentas específicas
 ```
 
-### Lanzar cuentas específicas
-```bat
-python launcher.py --account Cuenta1 Cuenta2
-```
+---
 
 ## Cómo funciona
 
-1. Lee las cookies del archivo `accounts.json`.
-2. Para cada cuenta solicita un **Auth Ticket** de un solo uso a la API de Roblox — esto evita pasar la cookie directamente al proceso.
-3. Lanza el ejecutable de Roblox con ese ticket usando el protocolo `roblox-player:`, con un delay de 3 segundos entre instancias para evitar conflictos de inicio.
+1. Guarda las sesiones cifradas en `accounts.json` (solo tu usuario de Windows puede leerlas).
+2. Para cada cuenta solicita un **Auth Ticket** de un solo uso a la API de Roblox.
+3. Lanza Roblox con ese ticket usando el protocolo `roblox-player:`.
