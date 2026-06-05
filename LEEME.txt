@@ -1,41 +1,38 @@
-MoreRobAccounts - Lanzador multi-cuenta de Roblox
-==================================================
+MoreRobAccounts 2.0 - Lanzador multi-cuenta de Roblox
+======================================================
 
 REQUISITOS
 ----------
 - Windows 10 u 11 (64 bits)
-- Roblox instalado en la PC
+- Roblox instalado (roblox.com/download)
 - Microsoft Edge (viene con Windows)
 
 INSTALACION
 -----------
-1. Descomprime esta carpeta donde quieras (Escritorio, Documentos, etc.)
-2. Abre MoreRobAccountsUI.exe
-3. NO muevas solo el .exe: deja accounts.json en la misma carpeta
+Opcion A - Instalador (recomendado):
+  Ejecuta MoreRobAccounts-Setup-2.0.0-win64.exe
+
+Opcion B - Portable:
+  Descomprime el ZIP y ejecuta MoreRobAccountsUI.exe
+  (deja accounts.json en la misma carpeta que el .exe)
+
+NOVEDADES 2.0
+-------------
+- Familias: agrupa cuentas + Place ID y usa "Lanzar Familia"
+- Historial de Place ID
+- Grupos por cuenta (Farm, Principal, etc.)
+- Comprobar / renovar sesiones caducadas
+- Validacion antes de lanzar (cuentas invalidas en rojo)
+- Barra de progreso y notificaciones de Windows
+- Delay configurable si lanzas mas de 3 cuentas
 
 PRIMER USO
 ----------
-1. Pon el Place ID del juego (numero del link de Roblox)
-2. Pulsa "Iniciar sesion con Roblox"
-3. Inicia sesion en la ventana de Edge que se abre
-4. La cuenta se guarda sola (cifrada). Repite para cada cuenta.
-5. Selecciona cuentas y pulsa "Lanzar todas" o "Seleccionadas"
+1. Pulsa "Iniciar sesion con Roblox" para cada cuenta
+2. Crea familias en "Gestionar" (opcional)
+3. Pon el Place ID o elige del historial
+4. "Lanzar Familia", "Lanzar todas" o "Seleccionadas"
 
-NO necesitas copiar cookies ni usar DevTools (F12).
-
-IMPORTANTE
-----------
-- Las sesiones se guardan CIFRADAS en accounts.json (solo tu usuario de Windows puede leerlas)
-- Nunca compartas tu accounts.json con nadie
-- Mantén esta ventana abierta mientras juegas (el launcher mantiene varias instancias abiertas)
-- Si Windows SmartScreen advierte sobre el archivo: es normal en apps sin firma digital.
-  Elige "Mas informacion" > "Ejecutar de todas formas" si confias en la fuente
-
-ANTIVIRUS
----------
-Algunos antivirus marcan falsos positivos apps hechas con PyInstaller.
-Si descargaste de una fuente confiable, puedes agregar una excepcion.
-
-SOPORTE / CODIGO FUENTE
--------------------------
+SOPORTE
+-------
 https://github.com/YondoPro189/MoreRobAccounts

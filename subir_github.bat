@@ -7,7 +7,7 @@ REM Puedes: editar aqui, o antes en CMD: set GITHUB_USER=tuusuario
 if not defined GITHUB_USER set GITHUB_USER=YondoPro189
 if not "%~1"=="" set GITHUB_USER=%~1
 set REPO_NAME=MoreRobAccounts
-set VERSION=1.0.4
+set VERSION=2.0.0
 set TAG=v%VERSION%
 
 set ZIP=release\MoreRobAccounts-v%VERSION%-win64.zip
@@ -109,10 +109,15 @@ gh release view %TAG% >nul 2>&1
 if errorlevel 1 (
     gh release create %TAG% "%ZIP%" ^
         --title "MoreRobAccounts v%VERSION%" ^
-        --notes "Icono personalizado, login por navegador corregido (v1.0.3), Edge/Chrome. Descomprime el ZIP y ejecuta MoreRobAccountsUI.exe."
+        --notes "MoreRobAccounts 2.0: familias, historial Place ID, validacion de sesiones, notificaciones Windows e instalador."
 ) else (
     echo La release %TAG% ya existe. Subiendo/actualizando el ZIP...
     gh release upload %TAG% "%ZIP%" --clobber
+)
+
+if exist "release\MoreRobAccounts-Setup-%VERSION%-win64.exe" (
+    echo === Subiendo instalador ===
+    gh release upload %TAG% "release\MoreRobAccounts-Setup-%VERSION%-win64.exe" --clobber
 )
 
 echo.

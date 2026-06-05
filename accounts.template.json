@@ -1,4 +1,11 @@
 {
-  "version": 2,
+  "version": 3,
+  "settings": {
+    "launch_delay_sec": 3,
+    "delay_after_accounts": 3,
+    "auth_max_retries": 2
+  },
+  "place_history": [],
+  "families": [],
   "accounts": []
 }

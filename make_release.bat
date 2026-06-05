@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set VERSION=1.0.4
+set VERSION=2.0.0
 set OUT=release\MoreRobAccounts-v%VERSION%-win64
 
 echo === Compilando aplicacion (sin consola) ===
@@ -14,7 +14,7 @@ if errorlevel 1 (
 )
 
 echo === Preparando carpeta de distribucion ===
-if exist release rmdir /s /q release
+if exist "%OUT%" rmdir /s /q "%OUT%"
 mkdir "%OUT%"
 
 copy /y "dist\MoreRobAccountsUI.exe" "%OUT%\"

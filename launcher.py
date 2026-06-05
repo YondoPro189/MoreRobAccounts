@@ -24,6 +24,8 @@ import argparse
 import requests
 from urllib.parse import quote
 
+import app_storage
+from app_storage import ACCOUNTS_FORMAT_VERSION
 from security import SecurityError, decrypt_secret, encrypt_secret, is_encryption_available
 
 try:
@@ -34,7 +36,7 @@ try:
 except ImportError:
     _WIN32_AVAILABLE = False
 
-ACCOUNTS_FORMAT_VERSION = 2
+ACCOUNTS_FORMAT_VERSION = app_storage.ACCOUNTS_FORMAT_VERSION  # noqa: F811
 
 def get_app_dir() -> str:
     """Carpeta del .exe (empaquetado) o del script (desarrollo)."""
@@ -80,95 +82,15 @@ ROBLOX_LAUNCHER = os.path.expandvars(
 
 
 # ---------------------------------------------------------------------------
-# Gestión de cuentas
+# Gestión de cuentas (delegado a app_storage v3)
 # ---------------------------------------------------------------------------
 
-def _read_accounts_raw() -> object | None:
-    accounts_file = get_accounts_file()
-    if not os.path.exists(accounts_file):
-        return None
-    with open(accounts_file, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _account_from_storage(entry: dict) -> dict:
-    name = entry.get("name", "").strip()
-    if not name:
-        raise SecurityError("Cuenta sin nombre en accounts.json")
-
-    if "secret" in entry:
-        cookie = decrypt_secret(entry["secret"])
-    elif "roblosecurity" in entry:
-        cookie = entry["roblosecurity"]
-    else:
-        raise SecurityError(f"Cuenta '{name}' sin datos de sesion")
-
-    return {"name": name, "roblosecurity": cookie}
-
-
-def _accounts_to_storage(accounts: list[dict]) -> dict:
-    stored = []
-    for acc in accounts:
-        name = acc.get("name", "").strip()
-        cookie = acc.get("roblosecurity", "")
-        if not name or not cookie:
-            continue
-        stored.append(
-            {
-                "name": name,
-                "secret": encrypt_secret(cookie),
-            }
-        )
-    return {"version": ACCOUNTS_FORMAT_VERSION, "accounts": stored}
-
-
 def load_accounts(*, migrate_plaintext: bool = True) -> list[dict]:
-    raw = _read_accounts_raw()
-    if raw is None:
-        return []
-
-    needs_migration = False
-    entries: list[dict]
-
-    if isinstance(raw, list):
-        entries = raw
-        needs_migration = True
-    elif isinstance(raw, dict):
-        entries = raw.get("accounts", [])
-        if not isinstance(entries, list):
-            raise SecurityError("Formato invalido en accounts.json")
-        if raw.get("version", 1) < ACCOUNTS_FORMAT_VERSION:
-            needs_migration = True
-        for entry in entries:
-            if "roblosecurity" in entry:
-                needs_migration = True
-                break
-    else:
-        raise SecurityError("Formato invalido en accounts.json")
-
-    accounts = [_account_from_storage(entry) for entry in entries]
-
-    if migrate_plaintext and needs_migration and accounts:
-        save_accounts(accounts)
-
-    return accounts
+    return app_storage.load_accounts(migrate_plaintext=migrate_plaintext)
 
 
 def save_accounts(accounts: list[dict]) -> None:
-    if not is_encryption_available():
-        raise SecurityError(
-            "No se puede guardar de forma segura sin pywin32 (pip install pywin32)"
-        )
-
-    accounts_file = get_accounts_file()
-    payload = _accounts_to_storage(accounts)
-    with open(accounts_file, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
-    try:
-        os.chmod(accounts_file, 0o600)
-    except (AttributeError, OSError):
-        pass
+    app_storage.save_accounts(accounts)
 
 
 def add_account_interactive() -> None:
@@ -218,7 +140,7 @@ def add_account_interactive() -> None:
     if any(a["name"] == name for a in accounts):
         print(f"Ya existe una cuenta llamada '{name}'.")
         return
-    accounts.append({"name": name, "roblosecurity": cookie})
+    accounts.append({"name": name, "roblosecurity": cookie, "group": ""})
     save_accounts(accounts)
     print(f"Cuenta '{name}' guardada (cifrada).")
 
@@ -253,12 +175,26 @@ def remove_accounts(names: list[str]) -> tuple[list[str], list[str]]:
 # Autenticación y obtención del Auth Ticket
 # ---------------------------------------------------------------------------
 
-def get_auth_ticket(roblosecurity: str, *, debug: bool = False) -> str | None:
+def get_auth_ticket(
+    roblosecurity: str,
+    *,
+    debug: bool = False,
+    max_retries: int = 1,
+) -> str | None:
     """
     Obtiene un Auth Ticket de un solo uso desde la API de Roblox.
-    Este ticket se pasa al launcher para autenticar la sesión sin
-    exponer la cookie directamente al proceso.
     """
+    attempts = max(1, min(5, max_retries))
+    for attempt in range(attempts):
+        ticket = _get_auth_ticket_once(roblosecurity, debug=debug, attempt=attempt + 1)
+        if ticket:
+            return ticket
+        if attempt + 1 < attempts:
+            time.sleep(1.5)
+    return None
+
+
+def _get_auth_ticket_once(roblosecurity: str, *, debug: bool = False, attempt: int = 1) -> str | None:
     url = "https://auth.roblox.com/v1/authentication-ticket"
     cookies = {".ROBLOSECURITY": roblosecurity}
 
@@ -309,6 +245,8 @@ def get_auth_ticket(roblosecurity: str, *, debug: bool = False) -> str | None:
         preview = (resp.text or "").strip()
         if len(preview) > 200:
             preview = preview[:200] + "..."
+        if attempt > 1:
+            print(f"[auth] reintento #{attempt}")
         print(
             f"[auth] intento#1 HTTP {resp.status_code}. csrf_header_present={bool(csrf)}. "
             f"resp_preview={preview!r} (esto suele ser el desafio CSRF)"
@@ -358,6 +296,45 @@ def find_roblox_launcher() -> str | None:
     return None
 
 
+def is_roblox_installed() -> tuple[bool, str | None]:
+    path = find_roblox_launcher()
+    return (path is not None, path)
+
+
+def validate_account_session(account: dict) -> tuple[bool, str | None]:
+    """Devuelve (valida, nombre_roblox)."""
+    cookie = account.get("roblosecurity", "")
+    if not isinstance(cookie, str) or not cookie.strip():
+        return False, None
+    try:
+        from secure_login import verify_roblox_session
+
+        username = verify_roblox_session(cookie)
+        return (username is not None, username)
+    except Exception:
+        return False, None
+
+
+def validate_accounts(accounts: list[dict]) -> dict[str, bool]:
+    result: dict[str, bool] = {}
+    for acc in accounts:
+        ok, _ = validate_account_session(acc)
+        result[acc["name"]] = ok
+    return result
+
+
+def compute_launch_delay(index: int, total: int, settings: dict | None = None) -> float:
+    """Espera entre lanzamientos. Tras N cuentas (default 3) usa delay configurable."""
+    cfg = settings or app_storage.get_settings()
+    threshold = cfg.get("delay_after_accounts", 3)
+    delay_sec = float(cfg.get("launch_delay_sec", 3))
+    if index <= 0:
+        return 0.0
+    if total > threshold:
+        return delay_sec
+    return 0.5
+
+
 def open_roblox_player_uri(uri: str) -> bool:
     """
     Abre el esquema roblox-player: usando el manejador registrado en Windows.
@@ -405,36 +382,34 @@ def launch_account(
     place_id: str,
     delay: float = 0.0,
     debug: bool = False,
-) -> None:
+    max_retries: int = 2,
+) -> bool:
     """Lanza una instancia de Roblox autenticada para la cuenta dada."""
     name = account["name"]
     cookie = account["roblosecurity"]
 
     if not isinstance(cookie, str) or not cookie.strip():
         print(f"[{name}] ERROR: cookie vacía.")
-        return
+        return False
     if "TU_COOKIE_AQUI" in cookie or "TU_COOKIE" in cookie:
         print(
             f"[{name}] ERROR: cookie parece placeholder. "
             f"Cambiala por tu .ROBLOSECURITY real."
         )
-        return
+        return False
 
     if delay:
         time.sleep(delay)
 
     print(f"[{name}] Obteniendo auth ticket...")
-    ticket = get_auth_ticket(cookie, debug=debug)
+    ticket = get_auth_ticket(cookie, debug=debug, max_retries=max_retries)
     if not ticket:
         print(
             f"[{name}] ERROR: No se pudo obtener el auth ticket. "
-            f"Revisa que la cookie sea correcta/este vigente. "
-            f"(Si usas --debug, veras el HTTP status.)"
+            f"Revisa que la cookie sea correcta/este vigente."
         )
-        return
+        return False
 
-    # El protocolo roblox-player acepta el auth ticket como parámetro
-    # Nota: placelauncherurl debe ir URL-encoded.
     place_launcher_url = (
         f"https://assetgame.roblox.com/game/PlaceLauncher.ashx"
         f"?request=RequestGame&browserTrackerId=0&placeId={place_id}&isPlayTogetherGame=false"
@@ -453,8 +428,6 @@ def launch_account(
         if debug:
             print(f"[{name}] Lanzando via protocolo roblox-player (ticket oculto).")
 
-        # Tomar el singleton ANTES de abrir Roblox para que
-        # no detecte otras instancias y no las cierre.
         singleton_ok = grab_roblox_singleton()
         if debug:
             if singleton_ok:
@@ -462,8 +435,6 @@ def launch_account(
             else:
                 print(f"[{name}] AVISO: pywin32 no disponible, singleton no bloqueado.")
 
-        # Pequeña pausa para que el mutex quede registrado en el kernel
-        # antes de que Roblox arranque.
         time.sleep(0.5)
 
         opened = open_roblox_player_uri(roblox_url)
@@ -471,8 +442,10 @@ def launch_account(
             subprocess.Popen([roblox_exe, roblox_url])
 
         print(f"[{name}] Instancia iniciada correctamente.")
+        return True
     except Exception as e:
         print(f"[{name}] ERROR al iniciar: {e}")
+        return False
 
 
 def launch_accounts(
@@ -481,25 +454,45 @@ def launch_accounts(
     *,
     place_id: str,
     debug: bool = False,
-) -> None:
-    """Lanza todas las cuentas en hilos paralelos con un pequeño delay entre ellas."""
-    threads = []
-    for i, account in enumerate(accounts):
-        t = threading.Thread(
-            target=launch_account,
-            args=(account, roblox_exe),
-            kwargs={
-                "delay": i * 3.0,
-                "debug": debug,
-                "place_id": place_id,
-            },  # 3 s entre cada lanzamiento
-            daemon=True,
-        )
-        threads.append(t)
-        t.start()
+    settings: dict | None = None,
+    on_progress=None,
+) -> tuple[list[str], list[str]]:
+    """
+    Lanza cuentas secuencialmente con delay configurable.
+    on_progress(index, total, account_name, status) opcional.
+    Devuelve (exitosas, fallidas).
+    """
+    cfg = settings or app_storage.get_settings()
+    max_retries = cfg.get("auth_max_retries", 2)
+    ok_names: list[str] = []
+    fail_names: list[str] = []
+    total = len(accounts)
 
-    for t in threads:
-        t.join()
+    for i, account in enumerate(accounts):
+        name = account["name"]
+        if on_progress:
+            on_progress(i, total, name, "launching")
+
+        delay = compute_launch_delay(i, total, cfg)
+        success = launch_account(
+            account,
+            roblox_exe,
+            place_id=place_id,
+            delay=delay,
+            debug=debug,
+            max_retries=max_retries,
+        )
+        if success:
+            ok_names.append(name)
+            status = "ok"
+        else:
+            fail_names.append(name)
+            status = "failed"
+
+        if on_progress:
+            on_progress(i + 1, total, name, status)
+
+    return ok_names, fail_names
 
 
 # ---------------------------------------------------------------------------
@@ -587,8 +580,10 @@ def main() -> None:
 
     print(f"Roblox encontrado en: {roblox_exe}")
     print(f"Lanzando {len(accounts)} cuenta(s)...\n")
-    launch_accounts(accounts, roblox_exe, place_id=args.place_id, debug=args.debug)
-    print("\nTodos los lanzamientos completados.")
+    ok, fail = launch_accounts(accounts, roblox_exe, place_id=args.place_id, debug=args.debug)
+    print(f"\nCompletado: {len(ok)} OK, {len(fail)} fallidas.")
+    if fail:
+        print("Fallidas:", ", ".join(fail))
 
     # IMPORTANTE: mantener el script vivo mientras haya instancias de Roblox
     # abiertas. Los mutex/event handles se liberan al cerrarse este proceso,

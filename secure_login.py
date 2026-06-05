@@ -153,6 +153,11 @@ def _write_login_log(message: str) -> None:
         pass
 
 
+def verify_roblox_session(cookie: str) -> str | None:
+    """Nombre de usuario si la cookie es valida."""
+    return _verify_session(cookie)
+
+
 def login_via_browser(*, timeout_sec: int = 300) -> tuple[str | None, str | None, str | None]:
     if not is_browser_login_available():
         return (
