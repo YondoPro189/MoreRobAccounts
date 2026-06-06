@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set VERSION=3.0.0
+set VERSION=3.0.1
 set OUT=release\MoreRobAccounts-v%VERSION%-win64
 
 echo === Compilando aplicacion (sin consola) ===

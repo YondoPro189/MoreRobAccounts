@@ -125,8 +125,10 @@ def migrate_to_v3(raw: object) -> dict:
         group = str(entry.get("group", "")).strip()
         description = str(entry.get("description", "")).strip() or group
         roblox_username = str(entry.get("roblox_username", "")).strip()
+        alias = str(entry.get("alias", "")).strip()
         item: dict = {
             "name": name,
+            "alias": alias,
             "group": group,
             "description": description,
             "roblox_username": roblox_username,
@@ -183,6 +185,7 @@ def account_from_storage(entry: dict) -> dict:
     description = str(entry.get("description", "")).strip() or group
     return {
         "name": name,
+        "alias": str(entry.get("alias", "")).strip(),
         "roblosecurity": cookie,
         "group": group,
         "description": description,
@@ -205,6 +208,7 @@ def accounts_to_storage(accounts: list[dict]) -> list[dict]:
         stored.append(
             {
                 "name": name,
+                "alias": str(acc.get("alias", "")).strip(),
                 "group": str(acc.get("group", "")).strip(),
                 "description": str(acc.get("description", "")).strip(),
                 "roblox_username": str(acc.get("roblox_username", "")).strip(),
@@ -247,7 +251,14 @@ def save_app_data(data: dict) -> None:
             group = str(entry.get("group", "")).strip()
             description = str(entry.get("description", "")).strip() or group
             roblox_username = str(entry.get("roblox_username", "")).strip()
-            meta = {"name": name, "group": group, "description": description, "roblox_username": roblox_username}
+            alias = str(entry.get("alias", "")).strip()
+            meta = {
+                "name": name,
+                "alias": alias,
+                "group": group,
+                "description": description,
+                "roblox_username": roblox_username,
+            }
             if "secret" in entry:
                 stored.append({**meta, "secret": entry["secret"]})
             elif "roblosecurity" in entry:
@@ -359,6 +370,8 @@ def update_account_fields(name: str, **fields: str) -> bool:
             entry["roblox_username"] = fields["roblox_username"].strip()
         if "group" in fields:
             entry["group"] = fields["group"].strip()
+        if "alias" in fields:
+            entry["alias"] = fields["alias"].strip()
         updated = True
         break
     if updated:

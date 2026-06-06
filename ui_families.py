@@ -66,12 +66,13 @@ class AddAccountsTableDialog(tk.Toplevel):
 
         in_family = set(self.family.get("accounts", []))
         for acc in self.accounts:
-            alias = acc.get("name", "?")
-            username = acc.get("roblox_username") or alias
+            account_id = acc.get("name", "?")
+            alias = acc.get("alias", "") or account_id
+            username = acc.get("roblox_username") or account_id
             desc = acc.get("description", "")
-            self.tree.insert("", "end", iid=alias, values=(username, alias, desc))
-            if alias in in_family:
-                self.tree.selection_add(alias)
+            self.tree.insert("", "end", iid=account_id, values=(username, alias, desc))
+            if account_id in in_family:
+                self.tree.selection_add(account_id)
 
         theme.label(self, text="Tip: Ctrl+click to select multiple accounts.", fg=theme.MUTED, font=theme.FONT_SM).grid(
             row=2, column=0, sticky="w", padx=14
@@ -104,29 +105,34 @@ class CreateFamilyDialog(tk.Toplevel):
         self.existing_names = existing_names
         self.on_created = on_created
         self.title("Create Family")
-        self.geometry("320x160")
+        self.geometry("340x280")
+        self.minsize(320, 260)
         self.configure(bg=theme.BG)
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
         theme.apply_ttk_style(self)
+        self._build()
 
-        theme.label(self, text="Family name").pack(anchor="w", padx=14, pady=(14, 4))
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+
+        theme.label(self, text="Family name").grid(row=0, column=0, sticky="w", padx=14, pady=(14, 4))
         self.name_var = tk.StringVar()
-        theme.entry(self, textvariable=self.name_var).pack(fill="x", padx=14)
+        theme.entry(self, textvariable=self.name_var).grid(row=1, column=0, sticky="ew", padx=14)
 
-        theme.label(self, text="Place ID").pack(anchor="w", padx=14, pady=(8, 4))
+        theme.label(self, text="Place ID").grid(row=2, column=0, sticky="w", padx=14, pady=(10, 4))
         self.place_var = tk.StringVar(value="0")
-        theme.entry(self, textvariable=self.place_var).pack(fill="x", padx=14)
+        theme.entry(self, textvariable=self.place_var).grid(row=3, column=0, sticky="ew", padx=14)
 
-        theme.label(self, text="FPS limit (per session)").pack(anchor="w", padx=14, pady=(8, 4))
+        theme.label(self, text="FPS limit (per session)").grid(row=4, column=0, sticky="w", padx=14, pady=(10, 4))
         self.fps_var = tk.StringVar(value="Default")
-        ttk.Combobox(self, textvariable=self.fps_var, values=FPS_CHOICES, state="readonly").pack(
-            fill="x", padx=14
+        ttk.Combobox(self, textvariable=self.fps_var, values=FPS_CHOICES, state="readonly").grid(
+            row=5, column=0, sticky="ew", padx=14
         )
 
         row = tk.Frame(self, bg=theme.BG)
-        row.pack(fill="x", padx=14, pady=14)
+        row.grid(row=6, column=0, sticky="w", padx=14, pady=(16, 14))
         theme.button(row, text="Create", command=self._create).pack(side="left", padx=(0, 8))
         theme.button(row, text="Cancel", command=self.destroy).pack(side="left")
 
@@ -150,7 +156,8 @@ class EditFamilyDialog(tk.Toplevel):
         self.family = family
         self.on_saved = on_saved
         self.title("Edit Family")
-        self.geometry("320x200")
+        self.geometry("340x240")
+        self.minsize(320, 220)
         self.configure(bg=theme.BG)
         self.resizable(False, False)
         self.transient(parent)

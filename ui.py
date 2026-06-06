@@ -85,6 +85,7 @@ class MoreRobAccountsUI(tk.Tk):
         self._readd_target: str | None = None
         self._window_icon: tk.PhotoImage | None = None
         self._context_iid: str | None = None
+        self._pending_new_account = False
         self._progress_label = tk.StringVar(value="")
         self.settings = app_storage.get_settings()
 
@@ -151,19 +152,23 @@ class MoreRobAccountsUI(tk.Tk):
         table_wrap.grid_rowconfigure(0, weight=1)
 
         cols = ("username", "alias", "description")
-        self.accounts_tree = ttk.Treeview(table_wrap, columns=cols, show="headings", selectmode="extended")
+        self.accounts_tree = ttk.Treeview(
+            table_wrap, columns=cols, show="tree headings", selectmode="extended"
+        )
+        self.accounts_tree.heading("#0", text="Category")
         self.accounts_tree.heading("username", text="Username")
         self.accounts_tree.heading("alias", text="Alias")
         self.accounts_tree.heading("description", text="Description")
-        self.accounts_tree.column("username", width=130, stretch=True, anchor="w")
-        self.accounts_tree.column("alias", width=110, stretch=True, anchor="w")
-        self.accounts_tree.column("description", width=160, stretch=True, anchor="w")
+        self.accounts_tree.column("#0", width=110, stretch=False, anchor="w")
+        self.accounts_tree.column("username", width=120, stretch=True, anchor="w")
+        self.accounts_tree.column("alias", width=100, stretch=True, anchor="w")
+        self.accounts_tree.column("description", width=140, stretch=True, anchor="w")
         self.accounts_tree.grid(row=0, column=0, sticky="nsew")
         sb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.accounts_tree.yview)
         sb.grid(row=0, column=1, sticky="ns")
         self.accounts_tree.configure(yscrollcommand=sb.set)
 
-        self.accounts_tree.bind("<<TreeviewSelect>>", self._on_account_select)
+        self.accounts_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.accounts_tree.bind("<Delete>", lambda _e: self.delete_selected_account())
         self.accounts_tree.bind("<Button-3>", self._show_account_context_menu)
 
@@ -234,17 +239,25 @@ class MoreRobAccountsUI(tk.Tk):
         row3.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         row3.grid_columnconfigure(0, weight=1)
         self.alias_var = tk.StringVar()
-        self.alias_entry = theme.PlaceholderEntry(row3, "Alias", textvariable=self.alias_var)
+        self.alias_entry = theme.PlaceholderEntry(row3, "Short label", textvariable=self.alias_var)
         self.alias_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         theme.button(row3, text="Set Alias", command=self.set_alias).grid(row=0, column=1)
 
+        row3b = tk.Frame(right, bg=theme.BG)
+        row3b.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        row3b.grid_columnconfigure(0, weight=1)
+        self.category_var = tk.StringVar()
+        self.category_entry = theme.PlaceholderEntry(row3b, "Category", textvariable=self.category_var)
+        self.category_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        theme.button(row3b, text="Set Category", command=self.set_category).grid(row=0, column=1)
+
         self.description_text = theme.PlaceholderText(right, "Account Description", height=10)
-        self.description_text.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
+        self.description_text.grid(row=5, column=0, sticky="nsew", pady=(0, 10))
         self.description_text.bind("<FocusOut>", lambda _e: self._save_description())
-        right.grid_rowconfigure(4, weight=1)
+        right.grid_rowconfigure(5, weight=1)
 
         row5 = tk.Frame(right, bg=theme.BG)
-        row5.grid(row=5, column=0, sticky="ew")
+        row5.grid(row=6, column=0, sticky="ew")
         row5.grid_columnconfigure(1, weight=1)
         theme.button(row5, text="Families", command=self.manage_families).grid(row=0, column=0, padx=(0, 4))
         self.launch_family_btn = theme.button(row5, text="Launch Family", command=self.launch_family)
@@ -290,11 +303,55 @@ class MoreRobAccountsUI(tk.Tk):
             return "••••••••"
         return username
 
+    def _is_category_iid(self, iid: str) -> bool:
+        return str(iid).startswith("__cat__")
+
+    def _category_iid(self, category: str) -> str:
+        return f"__cat__{category}"
+
+    def _account_category(self, acc: dict) -> str:
+        return acc.get("group", "").strip() or "Uncategorized"
+
+    def _unique_account_alias(self, base: str) -> str:
+        base = base.strip() or "Account"
+        if not any(a.get("name") == base for a in self.accounts):
+            return base
+        n = 2
+        while any(a.get("name") == f"{base}_{n}" for a in self.accounts):
+            n += 1
+        return f"{base}_{n}"
+
+    def _clear_account_fields(self) -> None:
+        self.alias_var.set("")
+        self.category_var.set("")
+        self.alias_entry._show_placeholder()
+        self.category_entry._show_placeholder()
+        self._set_description_field("")
+
+    def _on_tree_select(self, _event=None) -> None:
+        cats = [i for i in self.accounts_tree.selection() if self._is_category_iid(i)]
+        if cats:
+            self.accounts_tree.selection_remove(cats)
+        self._on_account_select()
+
     def _on_account_select(self, _event=None) -> None:
+        if self._pending_new_account:
+            return
         acc = self._get_single_selected_account()
         if not acc:
             return
-        self.alias_var.set(acc.get("name", ""))
+        self.alias_var.set(acc.get("alias", ""))
+        if acc.get("alias", ""):
+            self.alias_entry.configure(fg=theme.TEXT)
+        else:
+            self.alias_entry._show_placeholder()
+        group = acc.get("group", "").strip()
+        if group:
+            self.category_var.set(group)
+            self.category_entry.configure(fg=theme.TEXT)
+        else:
+            self.category_var.set("")
+            self.category_entry._show_placeholder()
         self._set_description_field(acc.get("description", ""))
 
     def _set_description_field(self, text: str) -> None:
@@ -308,11 +365,12 @@ class MoreRobAccountsUI(tk.Tk):
 
     def _show_account_context_menu(self, event: tk.Event) -> None:
         row = self.accounts_tree.identify_row(event.y)
-        if row:
-            if row not in self.accounts_tree.selection():
-                self.accounts_tree.selection_set(row)
-            self._context_iid = row
-            self._account_menu.tk_popup(event.x_root, event.y_root)
+        if not row or self._is_category_iid(row):
+            return
+        if row not in self.accounts_tree.selection():
+            self.accounts_tree.selection_set(row)
+        self._context_iid = row
+        self._account_menu.tk_popup(event.x_root, event.y_root)
 
     def context_add_to_family(self) -> None:
         selected = self._get_selected_accounts()
@@ -355,29 +413,29 @@ class MoreRobAccountsUI(tk.Tk):
             self.follow_username_var.set(username.strip())
             self.follow_user_selected()
 
+    def set_category(self) -> None:
+        acc = self._get_single_selected_account()
+        if not acc:
+            messagebox.showwarning("Category", "Select one account.")
+            return
+        category = self.category_entry.get_value()
+        if app_storage.update_account_fields(acc["name"], group=category):
+            for a in self.accounts:
+                if a["name"] == acc["name"]:
+                    a["group"] = category
+            self._refresh_accounts_list()
+
     def set_alias(self) -> None:
         acc = self._get_single_selected_account()
         if not acc:
             messagebox.showwarning("Alias", "Select one account.")
             return
         new_alias = self.alias_entry.get_value()
-        if not new_alias:
-            messagebox.showwarning("Alias", "Alias cannot be empty.")
-            return
-        if new_alias != acc["name"] and any(a.get("name") == new_alias for a in self.accounts):
-            messagebox.showwarning("Alias", f"Alias '{new_alias}' already exists.")
-            return
-        old_name = acc["name"]
-        if app_storage.update_account_fields(old_name, name=new_alias):
-            app_storage.rename_account_references(old_name, new_alias)
+        if app_storage.update_account_fields(acc["name"], alias=new_alias):
             for a in self.accounts:
-                if a["name"] == old_name:
-                    a["name"] = new_alias
-            if old_name in self._session_valid:
-                self._session_valid[new_alias] = self._session_valid.pop(old_name)
-            self._save_description()
+                if a["name"] == acc["name"]:
+                    a["alias"] = new_alias
             self._refresh_accounts_list()
-            self._refresh_families_combo()
 
     def _save_description(self) -> None:
         acc = self._get_single_selected_account()
@@ -395,6 +453,9 @@ class MoreRobAccountsUI(tk.Tk):
             return
         self._renew_target = None
         self._readd_target = None
+        self._pending_new_account = True
+        self.accounts_tree.selection_remove(self.accounts_tree.selection())
+        self._clear_account_fields()
         self.login_with_browser()
 
     def _check_roblox_installed(self) -> None:
@@ -431,22 +492,54 @@ class MoreRobAccountsUI(tk.Tk):
         app_storage.save_settings(self.settings)
 
     def _refresh_accounts_list(self) -> None:
-        selected = self.accounts_tree.selection()
+        selected = [i for i in self.accounts_tree.selection() if not self._is_category_iid(i)]
         self.accounts_tree.delete(*self.accounts_tree.get_children())
         self.accounts = load_accounts_ui()
-        for a in self.accounts:
-            alias = a.get("name", "?")
-            username = self._display_username(a)
-            desc = a.get("description", "")
-            tags = ()
-            if alias in self._session_valid and not self._session_valid[alias]:
-                tags = ("invalid",)
-            self.accounts_tree.insert("", "end", iid=alias, values=(username, alias, desc), tags=tags)
+
+        grouped: dict[str, list[dict]] = {}
+        for acc in self.accounts:
+            cat = self._account_category(acc)
+            grouped.setdefault(cat, []).append(acc)
+
+        categories = sorted(grouped.keys(), key=lambda c: (c == "Uncategorized", c.lower()))
+        for cat in categories:
+            cat_iid = self._category_iid(cat)
+            self.accounts_tree.insert(
+                "",
+                "end",
+                iid=cat_iid,
+                text=cat,
+                values=("", "", ""),
+                open=True,
+                tags=("category",),
+            )
+            for a in sorted(grouped[cat], key=lambda x: x.get("name", "").lower()):
+                account_id = a.get("name", "?")
+                username = self._display_username(a)
+                alias = a.get("alias", "")
+                desc = a.get("description", "")
+                tags = ()
+                if account_id in self._session_valid and not self._session_valid[account_id]:
+                    tags = ("invalid",)
+                self.accounts_tree.insert(
+                    cat_iid,
+                    "end",
+                    iid=account_id,
+                    text="",
+                    values=(username, alias, desc),
+                    tags=tags,
+                )
+
         self.accounts_tree.tag_configure("invalid", foreground=theme.ERROR)
+        self.accounts_tree.tag_configure("category", foreground=theme.MUTED)
         if selected:
-            keep = [i for i in selected if i in self.accounts_tree.get_children()]
-            if keep:
-                self.accounts_tree.selection_set(keep)
+            valid = []
+            for cat_iid in self.accounts_tree.get_children(""):
+                for iid in self.accounts_tree.get_children(cat_iid):
+                    if iid in selected:
+                        valid.append(iid)
+            if valid:
+                self.accounts_tree.selection_set(valid)
         n = len(self.accounts)
         invalid = sum(1 for v in self._session_valid.values() if not v)
         extra = f" · {invalid} invalid" if invalid else ""
@@ -467,6 +560,8 @@ class MoreRobAccountsUI(tk.Tk):
         *,
         description: str = "",
         roblox_username: str = "",
+        group: str = "",
+        alias: str = "",
     ) -> bool:
         if any(a.get("name") == name for a in self.accounts):
             messagebox.showwarning("Account", f"Account '{name}' already exists.")
@@ -475,7 +570,8 @@ class MoreRobAccountsUI(tk.Tk):
             {
                 "name": name,
                 "roblosecurity": cookie,
-                "group": "",
+                "group": group.strip(),
+                "alias": alias.strip(),
                 "description": description.strip(),
                 "roblox_username": roblox_username.strip(),
             }
@@ -506,6 +602,8 @@ class MoreRobAccountsUI(tk.Tk):
     def _finish_browser_login(self, cookie: str | None, username: str | None, error: str | None) -> None:
         renew = self._renew_target
         self._renew_target = None
+        pending_new = self._pending_new_account
+        self._pending_new_account = False
         if error or not cookie:
             messagebox.showerror("Login", error or "No session.")
             self.status_var.set("Login failed.")
@@ -523,10 +621,24 @@ class MoreRobAccountsUI(tk.Tk):
             else:
                 messagebox.showerror("Error", f"Account '{renew}' not found.")
         else:
-            alias = self.alias_entry.get_value() or roblox_user or "Account"
-            desc = self.description_text.get_value()
-            if self._save_account(alias, cookie, description=desc, roblox_username=roblox_user):
-                messagebox.showinfo("Done", f"Account '{alias}' saved.")
+            account_name = self._unique_account_alias(roblox_user or "Account") if pending_new else (
+                self.alias_entry.get_value() or roblox_user or "Account"
+            )
+            if not pending_new and any(a.get("name") == account_name for a in self.accounts):
+                account_name = self._unique_account_alias(account_name)
+            desc = "" if pending_new else self.description_text.get_value()
+            group = self.category_entry.get_value() if pending_new else ""
+            label = self.alias_entry.get_value() if pending_new else ""
+            if self._save_account(
+                account_name,
+                cookie,
+                description=desc,
+                roblox_username=roblox_user,
+                group=group,
+                alias=label,
+            ):
+                shown = label or account_name
+                messagebox.showinfo("Done", f"Account '{shown}' saved.")
         self._set_buttons_running(False)
 
     def _start_browser_login_thread(self) -> None:
@@ -704,7 +816,7 @@ class MoreRobAccountsUI(tk.Tk):
     def _get_selected_accounts(self) -> list[dict]:
         iids = self.accounts_tree.selection()
         by_name = {a["name"]: a for a in self.accounts}
-        return [by_name[i] for i in iids if i in by_name]
+        return [by_name[i] for i in iids if i in by_name and not self._is_category_iid(i)]
 
     def _set_buttons_running(self, running: bool) -> None:
         state = "disabled" if running else "normal"
