@@ -25,6 +25,7 @@ import requests
 from urllib.parse import quote
 
 import app_storage
+import roblox_fps
 from app_storage import ACCOUNTS_FORMAT_VERSION
 from security import SecurityError, decrypt_secret, encrypt_secret, is_encryption_available
 
@@ -323,6 +324,177 @@ def validate_accounts(accounts: list[dict]) -> dict[str, bool]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Seguir usuarios (Friends API)
+# ---------------------------------------------------------------------------
+
+_ROBLOX_API_HEADERS = {
+    "Referer": "https://www.roblox.com/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+}
+
+
+def resolve_roblox_user_id(username: str) -> tuple[int | None, str | None, str | None]:
+    """
+    Resuelve un username de Roblox a userId.
+    Devuelve (user_id, display_name, error).
+    """
+    name = username.strip()
+    if not name:
+        return None, None, "Username vacío."
+    if len(name) > 20:
+        return None, None, "Username demasiado largo."
+
+    try:
+        resp = requests.post(
+            "https://users.roblox.com/v1/usernames/users",
+            json={"usernames": [name], "excludeBannedUsers": True},
+            headers=_ROBLOX_API_HEADERS,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        return None, None, f"Error de red: {exc}"
+
+    if resp.status_code != 200:
+        return None, None, f"No se pudo buscar el usuario (HTTP {resp.status_code})."
+
+    try:
+        data = resp.json().get("data") or []
+    except ValueError:
+        return None, None, "Respuesta inválida de Roblox."
+
+    if not data:
+        return None, None, f"Usuario '{name}' no encontrado."
+
+    entry = data[0]
+    user_id = entry.get("id")
+    if not isinstance(user_id, int):
+        return None, None, f"Usuario '{name}' no encontrado."
+
+    display = entry.get("displayName") or entry.get("name") or name
+    return user_id, str(display), None
+
+
+def _fetch_csrf_token(session: requests.Session, cookies: dict, method_url: str) -> str | None:
+    headers = dict(_ROBLOX_API_HEADERS)
+    headers["X-CSRF-TOKEN"] = "fetch"
+    try:
+        resp = session.post(method_url, cookies=cookies, headers=headers, json={}, timeout=15)
+    except requests.RequestException:
+        return None
+    return resp.headers.get("x-csrf-token") or resp.headers.get("X-CSRF-Token")
+
+
+def follow_roblox_user(roblosecurity: str, target_user_id: int, *, debug: bool = False) -> tuple[str, str | None]:
+    """
+    Sigue a un usuario con la cookie dada.
+    Devuelve (estado, mensaje) donde estado es 'ok', 'already' o 'fail'.
+    """
+    cookies = {".ROBLOSECURITY": roblosecurity}
+    url = f"https://friends.roblox.com/v1/users/{target_user_id}/follow"
+    session = requests.Session()
+
+    csrf = _fetch_csrf_token(session, cookies, url)
+    if not csrf:
+        return "fail", "No se pudo obtener token CSRF."
+
+    headers = dict(_ROBLOX_API_HEADERS)
+    headers["X-CSRF-TOKEN"] = csrf
+
+    try:
+        resp = session.post(url, cookies=cookies, headers=headers, json={}, timeout=15)
+    except requests.RequestException as exc:
+        return "fail", f"Error de red: {exc}"
+
+    if resp.status_code == 200:
+        return "ok", None
+
+    try:
+        payload = resp.json()
+        errors = payload.get("errors") or []
+        for err in errors:
+            if not isinstance(err, dict):
+                continue
+            message = str(err.get("message", "")).lower()
+            if "already" in message or "follow" in message and "invalid" not in message:
+                return "already", None
+    except ValueError:
+        payload = None
+
+    body = (resp.text or "").lower()
+    if resp.status_code == 400 and "already" in body:
+        return "already", None
+
+    if resp.status_code == 403:
+        return "fail", "No permitido (privacidad del usuario o cuenta)."
+
+    if debug:
+        preview = (resp.text or "")[:200]
+        return "fail", f"HTTP {resp.status_code}: {preview}"
+
+    return "fail", f"HTTP {resp.status_code}"
+
+
+def follow_accounts_to_user(
+    accounts: list[dict],
+    username: str,
+    *,
+    debug: bool = False,
+    delay_sec: float = 0.6,
+    on_progress=None,
+) -> tuple[list[str], list[str], list[str], str | None]:
+    """
+    Cada cuenta en `accounts` sigue al username indicado.
+    Devuelve (exitosas, ya_seguían, fallidas, error_global).
+    """
+    user_id, display_name, error = resolve_roblox_user_id(username)
+    if error or user_id is None:
+        return [], [], [], error or "Usuario no encontrado."
+
+    ok_names: list[str] = []
+    already_names: list[str] = []
+    fail_names: list[str] = []
+    total = len(accounts)
+
+    for i, account in enumerate(accounts):
+        name = account["name"]
+        cookie = account.get("roblosecurity", "")
+        if on_progress:
+            on_progress(i, total, name, "following")
+
+        if not isinstance(cookie, str) or not cookie.strip():
+            fail_names.append(name)
+            if on_progress:
+                on_progress(i + 1, total, name, "failed")
+            continue
+
+        if i > 0 and delay_sec > 0:
+            time.sleep(delay_sec)
+
+        status, msg = follow_roblox_user(cookie, user_id, debug=debug)
+        if status == "ok":
+            ok_names.append(name)
+            prog = "ok"
+        elif status == "already":
+            already_names.append(name)
+            prog = "already"
+        else:
+            fail_names.append(name)
+            prog = "failed"
+            if debug and msg:
+                print(f"[{name}] follow error: {msg}")
+
+        if on_progress:
+            on_progress(i + 1, total, name, prog)
+
+    if on_progress and display_name:
+        on_progress(total, total, display_name, "done")
+
+    return ok_names, already_names, fail_names, None
+
+
 def compute_launch_delay(index: int, total: int, settings: dict | None = None) -> float:
     """Espera entre lanzamientos. Tras N cuentas (default 3) usa delay configurable."""
     cfg = settings or app_storage.get_settings()
@@ -453,6 +625,7 @@ def launch_accounts(
     roblox_exe: str,
     *,
     place_id: str,
+    fps_limit: int = 0,
     debug: bool = False,
     settings: dict | None = None,
     on_progress=None,
@@ -467,11 +640,17 @@ def launch_accounts(
     ok_names: list[str] = []
     fail_names: list[str] = []
     total = len(accounts)
+    fps_limit = roblox_fps.normalize_fps_limit(fps_limit)
 
     for i, account in enumerate(accounts):
         name = account["name"]
         if on_progress:
             on_progress(i, total, name, "launching")
+
+        if fps_limit > 0:
+            ok_fps, fps_err = roblox_fps.apply_fps_limit(fps_limit, roblox_exe=roblox_exe, debug=debug)
+            if not ok_fps and debug and fps_err:
+                print(f"[{name}] AVISO FPS: {fps_err}")
 
         delay = compute_launch_delay(i, total, cfg)
         success = launch_account(

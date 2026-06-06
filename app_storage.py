@@ -16,6 +16,9 @@ DEFAULT_SETTINGS = {
     "delay_after_accounts": 3,
     "auth_max_retries": 2,
     "use_family_place_id": True,
+    "validate_before_launch": True,
+    "hide_usernames": False,
+    "debug": False,
 }
 
 
@@ -46,6 +49,12 @@ def _normalize_settings(raw: dict | None) -> dict:
                     pass
         if "use_family_place_id" in raw:
             settings["use_family_place_id"] = bool(raw["use_family_place_id"])
+        if "validate_before_launch" in raw:
+            settings["validate_before_launch"] = bool(raw["validate_before_launch"])
+        if "hide_usernames" in raw:
+            settings["hide_usernames"] = bool(raw["hide_usernames"])
+        if "debug" in raw:
+            settings["debug"] = bool(raw["debug"])
     settings["auth_max_retries"] = max(1, min(5, settings["auth_max_retries"]))
     settings["launch_delay_sec"] = max(0, min(60, settings["launch_delay_sec"]))
     settings["delay_after_accounts"] = max(1, min(20, settings["delay_after_accounts"]))
@@ -63,7 +72,14 @@ def _normalize_family(entry: object) -> dict | None:
     if not isinstance(accounts_raw, list):
         accounts_raw = []
     accounts = [str(a).strip() for a in accounts_raw if str(a).strip()]
-    return {"name": name, "place_id": place_id, "accounts": accounts}
+    fps_limit = 0
+    if "fps_limit" in entry:
+        try:
+            fps_limit = int(entry.get("fps_limit", 0))
+        except (TypeError, ValueError):
+            fps_limit = 0
+    fps_limit = max(0, min(240, fps_limit))
+    return {"name": name, "place_id": place_id, "accounts": accounts, "fps_limit": fps_limit}
 
 
 def read_raw_app_data() -> object | None:
@@ -107,7 +123,14 @@ def migrate_to_v3(raw: object) -> dict:
         if not name:
             continue
         group = str(entry.get("group", "")).strip()
-        item: dict = {"name": name, "group": group}
+        description = str(entry.get("description", "")).strip() or group
+        roblox_username = str(entry.get("roblox_username", "")).strip()
+        item: dict = {
+            "name": name,
+            "group": group,
+            "description": description,
+            "roblox_username": roblox_username,
+        }
         if "secret" in entry:
             item["secret"] = entry["secret"]
         elif "roblosecurity" in entry:
@@ -156,10 +179,14 @@ def account_from_storage(entry: dict) -> dict:
     else:
         raise SecurityError(f"Cuenta '{name}' sin datos de sesion")
 
+    group = str(entry.get("group", "")).strip()
+    description = str(entry.get("description", "")).strip() or group
     return {
         "name": name,
         "roblosecurity": cookie,
-        "group": str(entry.get("group", "")).strip(),
+        "group": group,
+        "description": description,
+        "roblox_username": str(entry.get("roblox_username", "")).strip(),
     }
 
 
@@ -179,6 +206,8 @@ def accounts_to_storage(accounts: list[dict]) -> list[dict]:
             {
                 "name": name,
                 "group": str(acc.get("group", "")).strip(),
+                "description": str(acc.get("description", "")).strip(),
+                "roblox_username": str(acc.get("roblox_username", "")).strip(),
                 "secret": encrypt_secret(cookie),
             }
         )
@@ -216,16 +245,13 @@ def save_app_data(data: dict) -> None:
             if not name:
                 continue
             group = str(entry.get("group", "")).strip()
+            description = str(entry.get("description", "")).strip() or group
+            roblox_username = str(entry.get("roblox_username", "")).strip()
+            meta = {"name": name, "group": group, "description": description, "roblox_username": roblox_username}
             if "secret" in entry:
-                stored.append({"name": name, "group": group, "secret": entry["secret"]})
+                stored.append({**meta, "secret": entry["secret"]})
             elif "roblosecurity" in entry:
-                stored.append(
-                    {
-                        "name": name,
-                        "group": group,
-                        "secret": encrypt_secret(entry["roblosecurity"]),
-                    }
-                )
+                stored.append({**meta, "secret": encrypt_secret(entry["roblosecurity"])})
         payload["accounts"] = stored
 
     path = _accounts_file()
@@ -302,12 +328,14 @@ def resolve_family_accounts(family: dict, all_accounts: list[dict]) -> list[dict
     return resolved
 
 
-def update_account_cookie(name: str, cookie: str) -> bool:
+def update_account_cookie(name: str, cookie: str, *, roblox_username: str | None = None) -> bool:
     data = load_app_data(migrate=False)
     updated = False
     for entry in data.get("accounts", []):
         if entry.get("name") == name:
             entry["secret"] = encrypt_secret(cookie)
+            if roblox_username:
+                entry["roblox_username"] = roblox_username.strip()
             if "roblosecurity" in entry:
                 del entry["roblosecurity"]
             updated = True
@@ -315,3 +343,70 @@ def update_account_cookie(name: str, cookie: str) -> bool:
     if updated:
         save_app_data(data)
     return updated
+
+
+def update_account_fields(name: str, **fields: str) -> bool:
+    data = load_app_data(migrate=False)
+    updated = False
+    for entry in data.get("accounts", []):
+        if entry.get("name") != name:
+            continue
+        if "name" in fields and fields["name"].strip():
+            entry["name"] = fields["name"].strip()
+        if "description" in fields:
+            entry["description"] = fields["description"].strip()
+        if "roblox_username" in fields:
+            entry["roblox_username"] = fields["roblox_username"].strip()
+        if "group" in fields:
+            entry["group"] = fields["group"].strip()
+        updated = True
+        break
+    if updated:
+        save_app_data(data)
+    return updated
+
+
+def rename_account_references(old_name: str, new_name: str) -> None:
+    old_name = old_name.strip()
+    new_name = new_name.strip()
+    if not old_name or not new_name or old_name == new_name:
+        return
+    data = load_app_data(migrate=False)
+    changed = False
+    for fam in data.get("families", []):
+        if not isinstance(fam, dict):
+            continue
+        accounts = fam.get("accounts", [])
+        if old_name in accounts:
+            fam["accounts"] = sorted({new_name if x == old_name else x for x in accounts})
+            changed = True
+    if changed:
+        save_app_data(data)
+
+
+def add_accounts_to_family(family_name: str, account_names: list[str]) -> bool:
+    family_name = family_name.strip()
+    if not family_name:
+        return False
+    names = [n.strip() for n in account_names if n.strip()]
+    if not names:
+        return False
+
+    data = load_app_data(migrate=False)
+    families = data.get("families", [])
+    target = None
+    for fam in families:
+        if isinstance(fam, dict) and fam.get("name") == family_name:
+            target = fam
+            break
+    if target is None:
+        target = {"name": family_name, "place_id": "0", "accounts": []}
+        families.append(target)
+
+    existing = set(target.get("accounts", []))
+    for name in names:
+        existing.add(name)
+    target["accounts"] = sorted(existing)
+    data["families"] = families
+    save_app_data(data)
+    return True

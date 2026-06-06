@@ -7,7 +7,7 @@ REM Puedes: editar aqui, o antes en CMD: set GITHUB_USER=tuusuario
 if not defined GITHUB_USER set GITHUB_USER=YondoPro189
 if not "%~1"=="" set GITHUB_USER=%~1
 set REPO_NAME=MoreRobAccounts
-set VERSION=2.0.1
+set VERSION=3.0.0
 set TAG=v%VERSION%
 
 set ZIP=release\MoreRobAccounts-v%VERSION%-win64.zip
@@ -109,7 +109,7 @@ gh release view %TAG% >nul 2>&1
 if errorlevel 1 (
     gh release create %TAG% "%ZIP%" ^
         --title "MoreRobAccounts v%VERSION%" ^
-        --notes "Switch para elegir Place ID de la familia o del campo manual al lanzar familia."
+        --notes "v3.0.0: UI rediseñada (mockup wireframe), gestor de familias con tabla de cuentas, menú contextual, seguir usuarios, limitador FPS por familia (GlobalBasicSettings), ventana Configuration."
 ) else (
     echo La release %TAG% ya existe. Subiendo/actualizando el ZIP...
     gh release upload %TAG% "%ZIP%" --clobber
