@@ -125,8 +125,7 @@ class MoreRobAccountsUI(tk.Tk):
 
         body = tk.Frame(self, bg=theme.BG)
         body.grid(row=1, column=0, sticky="nsew", padx=self.PAD, pady=(6, self.PAD))
-        body.grid_columnconfigure(0, weight=62)
-        body.grid_columnconfigure(1, weight=38)
+        body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
         self._build_left_panel(body)
@@ -137,7 +136,7 @@ class MoreRobAccountsUI(tk.Tk):
 
     def _build_left_panel(self, parent: tk.Frame) -> None:
         left = tk.Frame(parent, bg=theme.BG)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        left.place(relx=0, rely=0, relwidth=0.64, relheight=1.0)
         left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
@@ -159,18 +158,16 @@ class MoreRobAccountsUI(tk.Tk):
         self.accounts_tree.heading("username", text="Username")
         self.accounts_tree.heading("alias", text="Alias")
         self.accounts_tree.heading("description", text="Description")
-        self.accounts_tree.column("#0", width=110, stretch=False, anchor="w")
-        self.accounts_tree.column("username", width=120, stretch=True, anchor="w")
-        self.accounts_tree.column("alias", width=100, stretch=True, anchor="w")
-        self.accounts_tree.column("description", width=140, stretch=True, anchor="w")
-        self.accounts_tree.grid(row=0, column=0, sticky="nsew")
-        sb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.accounts_tree.yview)
-        sb.grid(row=0, column=1, sticky="ns")
-        self.accounts_tree.configure(yscrollcommand=sb.set)
+        self.accounts_tree.column("#0", width=110, minwidth=90, stretch=False, anchor="w")
+        self.accounts_tree.column("username", width=130, minwidth=80, stretch=True, anchor="w")
+        self.accounts_tree.column("alias", width=120, minwidth=70, stretch=True, anchor="w")
+        self.accounts_tree.column("description", width=160, minwidth=80, stretch=True, anchor="w")
+        self.accounts_tree.grid(row=0, column=0, sticky="nsew", columnspan=2)
 
         self.accounts_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.accounts_tree.bind("<Delete>", lambda _e: self.delete_selected_account())
         self.accounts_tree.bind("<Button-3>", self._show_account_context_menu)
+        self.accounts_tree.bind("<Double-Button-1>", self._on_tree_double_click)
 
         bottom = tk.Frame(left, bg=theme.BG)
         bottom.grid(row=2, column=0, pady=(10, 0))
@@ -185,6 +182,8 @@ class MoreRobAccountsUI(tk.Tk):
         theme.label(left, textvariable=self.status_var, fg=theme.MUTED, font=theme.FONT_SM).grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         self._account_menu = tk.Menu(self, tearoff=0, bg=theme.BG, fg=theme.TEXT, activebackground="#222222")
+        self._account_menu.add_command(label="Copy username", command=self.copy_selected_username)
+        self._account_menu.add_separator()
         self._account_menu.add_command(label="Launch", command=self.launch_selected)
         self._account_menu.add_command(label="Launch all", command=self.launch_all)
         self._account_menu.add_separator()
@@ -199,7 +198,7 @@ class MoreRobAccountsUI(tk.Tk):
 
     def _build_right_panel(self, parent: tk.Frame) -> None:
         right = tk.Frame(parent, bg=theme.BG)
-        right.grid(row=0, column=1, sticky="nsew")
+        right.place(relx=0.65, rely=0, relwidth=0.35, relheight=1.0)
         right.grid_columnconfigure(0, weight=1)
 
         row0 = tk.Frame(right, bg=theme.BG)
@@ -371,6 +370,25 @@ class MoreRobAccountsUI(tk.Tk):
             self.accounts_tree.selection_set(row)
         self._context_iid = row
         self._account_menu.tk_popup(event.x_root, event.y_root)
+
+    def copy_selected_username(self) -> None:
+        acc = self._get_single_selected_account()
+        if not acc:
+            return
+        username = acc.get("roblox_username") or acc.get("name", "")
+        if username:
+            self.clipboard_clear()
+            self.clipboard_append(username)
+            self.status_var.set(f"Copied: {username}")
+            self.after(2000, lambda: self.status_var.set(""))
+
+    def _on_tree_double_click(self, event: tk.Event) -> None:
+        row = self.accounts_tree.identify_row(event.y)
+        if not row or self._is_category_iid(row):
+            return
+        if row not in self.accounts_tree.selection():
+            self.accounts_tree.selection_set(row)
+        self.copy_selected_username()
 
     def context_add_to_family(self) -> None:
         selected = self._get_selected_accounts()
