@@ -143,6 +143,7 @@ class MoreRobAccountsUI(tk.Tk):
 
         refresh_row = tk.Frame(left, bg=theme.BG)
         refresh_row.grid(row=0, column=0, sticky="e", pady=(0, 4))
+        theme.underlined_button(refresh_row, "Fix Launch", command=self.fix_multi_instance).pack(side="left", padx=(0, 14))
         theme.underlined_button(refresh_row, "Refresh", command=self.reload_accounts).pack(side="left")
         tk.Label(refresh_row, text="↻", bg=theme.BG, fg=theme.GREEN, font=("Segoe UI", 13)).pack(side="left", padx=(4, 0))
 
@@ -175,7 +176,9 @@ class MoreRobAccountsUI(tk.Tk):
         self.add_account_btn = theme.button(bottom, text="Add Account", command=self.add_account)
         self.add_account_btn.pack(side="left", padx=(0, 8))
         self.delete_account_btn = theme.button(bottom, text="Remove", command=self.delete_selected_account)
-        self.delete_account_btn.pack(side="left", padx=(0, 16))
+        self.delete_account_btn.pack(side="left", padx=(0, 8))
+        self.fix_launch_btn = theme.button(bottom, text="Fix Launch", command=self.fix_multi_instance)
+        self.fix_launch_btn.pack(side="left", padx=(0, 16))
         self.hide_username_var = tk.BooleanVar(value=bool(self.settings.get("hide_usernames", False)))
         theme.wire_checkbutton(bottom, "Hide Username", self.hide_username_var, command=self._toggle_hide_usernames).pack(side="left")
 
@@ -592,9 +595,21 @@ class MoreRobAccountsUI(tk.Tk):
         self.status_var.set(f"{n} account(s){extra}")
 
     def reload_accounts(self) -> None:
+        launcher.repair_multi_instance_state()
         self._refresh_families_combo()
         self._refresh_place_history()
         self._refresh_accounts_list()
+
+    def fix_multi_instance(self) -> None:
+        singleton_ok, tray_killed, shm_cleared = launcher.repair_multi_instance_state()
+        if singleton_ok:
+            self.status_var.set(
+                f"Multi-instance fixed (tray closed: {tray_killed}, memory cleaned: {shm_cleared}) · Open windows kept"
+            )
+        else:
+            self.status_var.set(
+                f"Memory cleaned ({shm_cleared}) · Singleton held by a pre-existing Roblox window"
+            )
 
     def manage_families(self) -> None:
         FamilyManagerDialog(self, self.accounts, on_saved=self._refresh_families_combo)

@@ -605,6 +605,145 @@ class _UNICODE_STRING(ctypes.Structure):
     ]
 
 
+class _OBJECT_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [
+        ("Length", wintypes.ULONG),
+        ("RootDirectory", wintypes.HANDLE),
+        ("ObjectName", ctypes.POINTER(_UNICODE_STRING)),
+        ("Attributes", wintypes.ULONG),
+        ("SecurityDescriptor", wintypes.LPVOID),
+        ("SecurityQualityOfService", wintypes.LPVOID),
+    ]
+
+
+class _OBJECT_DIRECTORY_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("Name", _UNICODE_STRING),
+        ("TypeName", _UNICODE_STRING),
+    ]
+
+
+def clear_roblox_shared_memory(roblox_exe: str | None = None, *, debug: bool = False) -> int:
+    """
+    Limpia las secciones de memoria compartida (.shm y RBXMAINWND-*) de Roblox en RAM
+    SIN cerrar las ventanas de juego abiertas.
+    Cuando se cierra una ventana de Roblox (o se abre un proceso --launch-to-tray),
+    Roblox escribe su HWND y el flag TrayMode en '<ruta_exe>.shm'. Si queda otra ventana
+    abierta, Windows mantiene viva esa sección '.shm' con el HWND muerto, provocando que
+    nuevas instancias fallen en SingleInstanceGuard.cpp(131) con error 1400 (HWND inválido).
+    Al poner en cero esos 64 bytes, las nuevas instancias arrancan limpiamente.
+    """
+    if sys.platform != "win32":
+        return 0
+
+    candidates: set[str] = {"RBXMAINWND-4DAAC10B-9C9A-4471-9218-07310329FD0D"}
+    exe_path = roblox_exe or find_roblox_launcher()
+    if exe_path:
+        norm_exe = os.path.abspath(exe_path)
+        candidates.add(norm_exe.replace("\\", "_") + ".shm")
+        if len(norm_exe) >= 2 and norm_exe[1] == ":":
+            alt_exe = (norm_exe[0].swapcase() + norm_exe[1:]).replace("\\", "_") + ".shm"
+            candidates.add(alt_exe)
+
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        sess_id = wintypes.DWORD(0)
+        kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(sess_id))
+        dir_path = f"\\Sessions\\{sess_id.value}\\BaseNamedObjects"
+        u_path = _UNICODE_STRING(len(dir_path) * 2, (len(dir_path) + 1) * 2, dir_path)
+        oa = _OBJECT_ATTRIBUTES(
+            ctypes.sizeof(_OBJECT_ATTRIBUTES), 0, ctypes.pointer(u_path), 0x40, None, None
+        )
+        h_dir = wintypes.HANDLE()
+        if ntdll.NtOpenDirectoryObject(ctypes.byref(h_dir), 0x0001 | 0x0002, ctypes.byref(oa)) == 0 and h_dir:
+            try:
+                buf = ctypes.create_string_buffer(65536)
+                ctx = wintypes.ULONG(0)
+                ret_len = wintypes.ULONG(0)
+                first = True
+                while True:
+                    st = ntdll.NtQueryDirectoryObject(
+                        h_dir, buf, len(buf), False, first, ctypes.byref(ctx), ctypes.byref(ret_len)
+                    )
+                    first = False
+                    if st < 0:
+                        break
+                    offset = 0
+                    while True:
+                        info = _OBJECT_DIRECTORY_INFORMATION.from_buffer(buf, offset)
+                        if not info.Name.Buffer or info.Name.Length == 0:
+                            break
+                        name = info.Name.Buffer[: info.Name.Length // 2]
+                        tname = info.TypeName.Buffer[: info.TypeName.Length // 2]
+                        name_l = name.lower()
+                        if tname == "Section" and (
+                            name_l.startswith("rbxmainwnd")
+                            or (name_l.endswith(".shm") and "roblox" in name_l)
+                        ):
+                            candidates.add(name)
+                        offset += ctypes.sizeof(_OBJECT_DIRECTORY_INFORMATION)
+            finally:
+                kernel32.CloseHandle(h_dir)
+    except Exception:
+        pass
+
+    cleared = 0
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenFileMappingW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.OpenFileMappingW.restype = wintypes.HANDLE
+        kernel32.MapViewOfFile.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_size_t,
+        ]
+        kernel32.MapViewOfFile.restype = wintypes.LPVOID
+        kernel32.UnmapViewOfFile.argtypes = [wintypes.LPCVOID]
+        kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.OpenMutexW.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+
+        for name in candidates:
+            h_mtx = 0
+            mtx_acquired = False
+            if name.lower().endswith(".shm"):
+                mtx_name = name[:-4] + ".mtx"
+                h_mtx = kernel32.OpenMutexW(0x00100000, False, mtx_name)  # SYNCHRONIZE
+                if h_mtx:
+                    res = kernel32.WaitForSingleObject(h_mtx, 80)
+                    mtx_acquired = res in (0x00000000, 0x00000080)
+            try:
+                h_map = kernel32.OpenFileMappingW(0x0002 | 0x0004, False, name)  # WRITE | READ
+                if h_map:
+                    try:
+                        ptr = kernel32.MapViewOfFile(h_map, 0x0002 | 0x0004, 0, 0, 64)
+                        if ptr:
+                            try:
+                                ctypes.memset(ptr, 0, 64)
+                                cleared += 1
+                                if debug:
+                                    print(f"[shm] Memoria compartida limpiada: {name}")
+                            finally:
+                                kernel32.UnmapViewOfFile(ptr)
+                    finally:
+                        kernel32.CloseHandle(h_map)
+            finally:
+                if h_mtx:
+                    if mtx_acquired:
+                        kernel32.ReleaseMutex(h_mtx)
+                    kernel32.CloseHandle(h_mtx)
+    except Exception as exc:
+        if debug:
+            print(f"[shm] Aviso al limpiar memoria compartida: {exc}")
+
+    return cleared
+
+
 def list_roblox_pids() -> list[int]:
     """Devuelve la lista de PIDs de procesos RobloxPlayerBeta.exe activos."""
     if sys.platform != "win32":
@@ -730,6 +869,8 @@ def kill_roblox_tray_processes(debug: bool = False) -> int:
             if not remaining:
                 break
             time.sleep(0.05)
+    # Limpiar siempre la memoria compartida (.shm) por si el proceso de bandeja dejó su HWND muerto
+    clear_roblox_shared_memory(debug=debug)
     return len(killed)
 
 
@@ -851,8 +992,27 @@ def ensure_roblox_singleton(*, force_close_existing: bool = False) -> bool:
     if force_close_existing:
         close_all_roblox_processes()
         time.sleep(0.2)
+        clear_roblox_shared_memory()
         return grab_roblox_singleton()
     return False
+
+
+def repair_multi_instance_state(
+    roblox_exe: str | None = None,
+    *,
+    debug: bool = False,
+) -> tuple[bool, int, int]:
+    """
+    Repara el estado multi-cuenta SIN cerrar las ventanas de juego ya abiertas:
+    1) Cierra procesos invisibles de bandeja (--launch-to-tray).
+    2) Limpia las secciones de memoria compartida (.shm / RBXMAINWND) con HWNDs muertos.
+    3) Re-adquiere los singletons (ROBLOX_singletonMutex y ROBLOX_singletonEvent).
+    Devuelve (singleton_ok, tray_cerrados, shm_limpiados).
+    """
+    tray_killed = kill_roblox_tray_processes(debug=debug)
+    shm_cleared = clear_roblox_shared_memory(roblox_exe, debug=debug)
+    singleton_ok = grab_roblox_singleton()
+    return singleton_ok, tray_killed, shm_cleared
 
 
 def sync_roblox_cookies_dat(roblosecurity: str, *, debug: bool = False) -> bool:
@@ -971,46 +1131,66 @@ def launch_account(
     place_launcher_url = build_place_launcher_url(place_id, job_id)
     encoded_place_launcher_url = quote(place_launcher_url, safe="")
 
-    roblox_url = (
-        f"roblox-player:1+launchmode:play"
-        f"+gameinfo:{ticket}"
-        f"+launchtime:{int(time.time() * 1000)}"
-        f"+placelauncherurl:{encoded_place_launcher_url}"
-        f"+browsertrackerid:0+robloxLocale:en_us+gameLocale:en_us"
-    )
+    for launch_try in range(2):
+        if launch_try > 0:
+            if debug:
+                print(f"[{name}] Reintentando inicio tras reparar estado multi-instancia...")
+            repair_multi_instance_state(roblox_exe, debug=debug)
+            ticket = get_auth_ticket(cookie, debug=debug, max_retries=max_retries)
+            if not ticket:
+                return False
 
-    try:
-        if debug:
-            print(f"[{name}] Lanzando via protocolo roblox-player (ticket oculto).")
+        roblox_url = (
+            f"roblox-player:1+launchmode:play"
+            f"+gameinfo:{ticket}"
+            f"+launchtime:{int(time.time() * 1000)}"
+            f"+placelauncherurl:{encoded_place_launcher_url}"
+            f"+browsertrackerid:0+robloxLocale:en_us+gameLocale:en_us"
+        )
 
-        sync_roblox_cookies_dat(cookie, debug=debug)
-        pids_before = set(list_roblox_pids())
+        try:
+            if debug:
+                print(f"[{name}] Lanzando via protocolo roblox-player (ticket oculto).")
 
-        opened = open_roblox_player_uri(roblox_url)
-        if not opened:
-            subprocess.Popen([roblox_exe, roblox_url])
+            clear_roblox_shared_memory(roblox_exe, debug=debug)
+            sync_roblox_cookies_dat(cookie, debug=debug)
+            pids_before = set(list_roblox_pids())
 
-        # Esperar a que el nuevo proceso RobloxPlayerBeta.exe aparezca y lea RobloxCookies.dat
-        spawn_deadline = time.time() + 3.5
-        spawned_pid: int | None = None
-        while time.time() < spawn_deadline:
-            new_pids = set(list_roblox_pids()) - pids_before
-            if new_pids:
-                spawned_pid = next(iter(new_pids))
-                break
-            time.sleep(0.1)
+            opened = open_roblox_player_uri(roblox_url)
+            if not opened:
+                subprocess.Popen([roblox_exe, roblox_url])
 
-        if spawned_pid is not None:
-            # Dar margen para que el nuevo proceso complete loadAuthTokenFromDisk (~0.9s)
-            time.sleep(1.5)
-        else:
-            time.sleep(1.0)
+            # Esperar a que el nuevo proceso RobloxPlayerBeta.exe aparezca y lea RobloxCookies.dat
+            spawn_deadline = time.time() + 3.5
+            spawned_pid: int | None = None
+            while time.time() < spawn_deadline:
+                new_pids = set(list_roblox_pids()) - pids_before
+                if new_pids:
+                    spawned_pid = next(iter(new_pids))
+                    break
+                time.sleep(0.1)
 
-        print(f"[{name}] Instancia iniciada correctamente.")
-        return True
-    except Exception as e:
-        print(f"[{name}] ERROR al iniciar: {e}")
-        return False
+            if spawned_pid is not None:
+                # Dar margen para que el nuevo proceso complete SingleInstanceGuard y loadAuthTokenFromDisk (~0.9s)
+                time.sleep(1.5)
+                if spawned_pid not in set(list_roblox_pids()):
+                    # El proceso se cerró prematuramente (ej. colisión de .shm con proceso de bandeja)
+                    if launch_try == 0:
+                        continue
+                    print(f"[{name}] ERROR: el proceso de Roblox se cerró al iniciar.")
+                    return False
+            else:
+                time.sleep(1.0)
+                if launch_try == 0:
+                    continue
+
+            print(f"[{name}] Instancia iniciada correctamente.")
+            return True
+        except Exception as e:
+            print(f"[{name}] ERROR al iniciar: {e}")
+            return False
+
+    return False
 
 
 def launch_accounts(
