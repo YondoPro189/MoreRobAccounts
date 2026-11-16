@@ -623,18 +623,70 @@ class _OBJECT_DIRECTORY_INFORMATION(ctypes.Structure):
     ]
 
 
+_last_valid_game_shm: bytes | None = None
+
+
+def _find_live_game_window(game_pids: set[int]) -> tuple[int, int] | None:
+    """Devuelve (hwnd, pid) de una ventana visible de Roblox perteneciente a game_pids."""
+    if sys.platform != "win32" or not game_pids:
+        return None
+    try:
+        user32 = ctypes.WinDLL("user32")
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        found: list[tuple[int, int]] = []
+        fallback: list[tuple[int, int]] = []
+
+        def _cb(hwnd: int, _lparam: int) -> bool:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
+            p_val = int(pid.value)
+            if p_val not in game_pids:
+                return True
+            buf = ctypes.create_unicode_buffer(128)
+            user32.GetWindowTextW(wintypes.HWND(hwnd), buf, 128)
+            if buf.value == "Roblox":
+                found.append((int(hwnd), p_val))
+                return False
+            fallback.append((int(hwnd), p_val))
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(_cb), 0)
+        if found:
+            return found[0]
+        if fallback:
+            return fallback[0]
+    except Exception:
+        pass
+    return None
+
+
 def clear_roblox_shared_memory(roblox_exe: str | None = None, *, debug: bool = False) -> int:
     """
-    Limpia las secciones de memoria compartida (.shm y RBXMAINWND-*) de Roblox en RAM
-    SIN cerrar las ventanas de juego abiertas.
-    Cuando se cierra una ventana de Roblox (o se abre un proceso --launch-to-tray),
-    Roblox escribe su HWND y el flag TrayMode en '<ruta_exe>.shm'. Si queda otra ventana
-    abierta, Windows mantiene viva esa sección '.shm' con el HWND muerto, provocando que
-    nuevas instancias fallen en SingleInstanceGuard.cpp(131) con error 1400 (HWND inválido).
-    Al poner en cero esos 64 bytes, las nuevas instancias arrancan limpiamente.
+    Repara las secciones de memoria compartida (.shm y RBXMAINWND-*) de Roblox en RAM
+    SIN cerrar las ventanas de juego abiertas y SIN poner el HWND en 0 (poner HWND=0
+    cuando .shm ya existe provoca que SingleInstanceGuard aborte tras 1.5s con
+    'Invalid active client info').
+    Si una ventana o proceso de bandeja murió dejando su HWND inválido mientras otra
+    ventana de juego sigue abierta, restaura en .shm el HWND y PID de la ventana activa.
     """
+    global _last_valid_game_shm
     if sys.platform != "win32":
         return 0
+
+    game_pids: set[int] = set()
+    for pid in list_roblox_pids():
+        cmd = get_process_cmdline(pid)
+        if cmd is None or "--launch-to-tray" not in cmd.lower():
+            game_pids.add(pid)
+
+    # Si no hay ventanas de juego abiertas, no tocar .shm (al cerrar el proceso de bandeja
+    # Windows destruye la sección automáticamente).
+    if not game_pids:
+        return 0
+
+    live_target = _find_live_game_window(game_pids)
 
     candidates: set[str] = {"RBXMAINWND-4DAAC10B-9C9A-4471-9218-07310329FD0D"}
     exe_path = roblox_exe or find_roblox_launcher()
@@ -645,50 +697,7 @@ def clear_roblox_shared_memory(roblox_exe: str | None = None, *, debug: bool = F
             alt_exe = (norm_exe[0].swapcase() + norm_exe[1:]).replace("\\", "_") + ".shm"
             candidates.add(alt_exe)
 
-    try:
-        ntdll = ctypes.WinDLL("ntdll")
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        sess_id = wintypes.DWORD(0)
-        kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(sess_id))
-        dir_path = f"\\Sessions\\{sess_id.value}\\BaseNamedObjects"
-        u_path = _UNICODE_STRING(len(dir_path) * 2, (len(dir_path) + 1) * 2, dir_path)
-        oa = _OBJECT_ATTRIBUTES(
-            ctypes.sizeof(_OBJECT_ATTRIBUTES), 0, ctypes.pointer(u_path), 0x40, None, None
-        )
-        h_dir = wintypes.HANDLE()
-        if ntdll.NtOpenDirectoryObject(ctypes.byref(h_dir), 0x0001 | 0x0002, ctypes.byref(oa)) == 0 and h_dir:
-            try:
-                buf = ctypes.create_string_buffer(65536)
-                ctx = wintypes.ULONG(0)
-                ret_len = wintypes.ULONG(0)
-                first = True
-                while True:
-                    st = ntdll.NtQueryDirectoryObject(
-                        h_dir, buf, len(buf), False, first, ctypes.byref(ctx), ctypes.byref(ret_len)
-                    )
-                    first = False
-                    if st < 0:
-                        break
-                    offset = 0
-                    while True:
-                        info = _OBJECT_DIRECTORY_INFORMATION.from_buffer(buf, offset)
-                        if not info.Name.Buffer or info.Name.Length == 0:
-                            break
-                        name = info.Name.Buffer[: info.Name.Length // 2]
-                        tname = info.TypeName.Buffer[: info.TypeName.Length // 2]
-                        name_l = name.lower()
-                        if tname == "Section" and (
-                            name_l.startswith("rbxmainwnd")
-                            or (name_l.endswith(".shm") and "roblox" in name_l)
-                        ):
-                            candidates.add(name)
-                        offset += ctypes.sizeof(_OBJECT_DIRECTORY_INFORMATION)
-            finally:
-                kernel32.CloseHandle(h_dir)
-    except Exception:
-        pass
-
-    cleared = 0
+    repaired = 0
     try:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenFileMappingW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
@@ -707,16 +716,27 @@ def clear_roblox_shared_memory(roblox_exe: str | None = None, *, debug: bool = F
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+        kernel32.ReleaseMutex.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        user32 = ctypes.WinDLL("user32")
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
 
         for name in candidates:
+            is_shm = name.lower().endswith(".shm")
             h_mtx = 0
             mtx_acquired = False
-            if name.lower().endswith(".shm"):
+            if is_shm:
                 mtx_name = name[:-4] + ".mtx"
-                h_mtx = kernel32.OpenMutexW(0x00100000, False, mtx_name)  # SYNCHRONIZE
+                # SYNCHRONIZE | MUTEX_MODIFY_STATE (0x00100001) para poder hacer ReleaseMutex
+                h_mtx = kernel32.OpenMutexW(0x00100001, False, mtx_name)
                 if h_mtx:
-                    res = kernel32.WaitForSingleObject(h_mtx, 80)
+                    res = kernel32.WaitForSingleObject(h_mtx, 150)
                     mtx_acquired = res in (0x00000000, 0x00000080)
+                    if not mtx_acquired:
+                        kernel32.CloseHandle(h_mtx)
+                        continue
             try:
                 h_map = kernel32.OpenFileMappingW(0x0002 | 0x0004, False, name)  # WRITE | READ
                 if h_map:
@@ -724,10 +744,30 @@ def clear_roblox_shared_memory(roblox_exe: str | None = None, *, debug: bool = F
                         ptr = kernel32.MapViewOfFile(h_map, 0x0002 | 0x0004, 0, 0, 64)
                         if ptr:
                             try:
-                                ctypes.memset(ptr, 0, 64)
-                                cleared += 1
-                                if debug:
-                                    print(f"[shm] Memoria compartida limpiada: {name}")
+                                hwnd = ctypes.c_uint64.from_address(ptr).value
+                                pid = ctypes.c_uint32.from_address(ptr + 8).value if is_shm else 0
+                                if is_shm and hwnd != 0 and pid in game_pids and user32.IsWindow(hwnd):
+                                    # La sección .shm tiene una instancia de juego válida y viva:
+                                    # guardar respaldo y NO modificarla.
+                                    _last_valid_game_shm = bytes(ctypes.string_at(ptr, 64))
+                                elif live_target is not None:
+                                    live_hwnd, live_pid = live_target
+                                    stale = (
+                                        hwnd == 0
+                                        or not user32.IsWindow(hwnd)
+                                        or (is_shm and pid not in game_pids)
+                                    )
+                                    if stale:
+                                        if is_shm:
+                                            if _last_valid_game_shm and len(_last_valid_game_shm) == 64:
+                                                ctypes.memmove(ptr, _last_valid_game_shm, 64)
+                                            ctypes.c_uint64.from_address(ptr).value = live_hwnd
+                                            ctypes.c_uint32.from_address(ptr + 8).value = live_pid
+                                        else:
+                                            ctypes.c_uint64.from_address(ptr).value = live_hwnd
+                                        repaired += 1
+                                        if debug:
+                                            print(f"[shm] Restaurado HWND activo ({hex(live_hwnd)}) en: {name}")
                             finally:
                                 kernel32.UnmapViewOfFile(ptr)
                     finally:
@@ -739,9 +779,9 @@ def clear_roblox_shared_memory(roblox_exe: str | None = None, *, debug: bool = F
                     kernel32.CloseHandle(h_mtx)
     except Exception as exc:
         if debug:
-            print(f"[shm] Aviso al limpiar memoria compartida: {exc}")
+            print(f"[shm] Aviso al verificar memoria compartida: {exc}")
 
-    return cleared
+    return repaired
 
 
 def list_roblox_pids() -> list[int]:
@@ -799,23 +839,45 @@ def get_process_cmdline(pid: int) -> str | None:
 
 def disable_roblox_tray_autostart() -> None:
     """
-    Elimina la entrada de auto-inicio '--launch-to-tray' de Roblox en el Registro
-    para evitar que Roblox bloquee los singletons en segundo plano al iniciar Windows.
+    Desactiva el modo bandeja (MinimizeToTray / LaunchAtStartup) en appStorage.json
+    y elimina la entrada '--launch-to-tray' de Roblox en el Registro de Windows.
     """
-    if winreg is None or sys.platform != "win32":
+    if sys.platform != "win32":
         return
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE,
-        ) as key:
-            val, _ = winreg.QueryValueEx(key, "RobloxPlayerBeta")
-            if isinstance(val, str) and "--launch-to-tray" in val.lower():
-                winreg.DeleteValue(key, "RobloxPlayerBeta")
-    except OSError:
-        pass
+    if winreg is not None:
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_READ | winreg.KEY_WRITE,
+            ) as key:
+                val, _ = winreg.QueryValueEx(key, "RobloxPlayerBeta")
+                if isinstance(val, str) and "--launch-to-tray" in val.lower():
+                    winreg.DeleteValue(key, "RobloxPlayerBeta")
+        except OSError:
+            pass
+
+    app_storage_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\LocalStorage\appStorage.json")
+    if os.path.isfile(app_storage_path):
+        try:
+            with open(app_storage_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                desired = {
+                    "MinimizeToTray": "false",
+                    "LaunchAtStartup": "false",
+                    "LaunchAtStartupInitialized": "true",
+                    "SystemTrayModalShown": "true",
+                }
+                if any(data.get(k) != v for k, v in desired.items()):
+                    data.update(desired)
+                    tmp = app_storage_path + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(data, f, separators=(",", ":"))
+                    os.replace(tmp, app_storage_path)
+        except Exception:
+            pass
 
 
 def _terminate_pid(pid: int) -> bool:
@@ -1171,14 +1233,16 @@ def launch_account(
                 time.sleep(0.1)
 
             if spawned_pid is not None:
-                # Dar margen para que el nuevo proceso complete SingleInstanceGuard y loadAuthTokenFromDisk (~0.9s)
-                time.sleep(1.5)
+                # Dar margen para que el nuevo proceso cree su ventana (~1.8s) y complete loadAuthTokenFromDisk
+                time.sleep(2.2)
                 if spawned_pid not in set(list_roblox_pids()):
                     # El proceso se cerró prematuramente (ej. colisión de .shm con proceso de bandeja)
                     if launch_try == 0:
                         continue
                     print(f"[{name}] ERROR: el proceso de Roblox se cerró al iniciar.")
                     return False
+                # Guardar respaldo del .shm válido recién escrito por esta instancia de juego
+                clear_roblox_shared_memory(roblox_exe, debug=debug)
             else:
                 time.sleep(1.0)
                 if launch_try == 0:
