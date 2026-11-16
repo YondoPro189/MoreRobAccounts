@@ -14,8 +14,12 @@ Uso:
   python launcher.py --account Cuenta1 Cuenta2  -> lanza solo esas cuentas
 """
 
+import base64
+import ctypes
+from ctypes import wintypes
 import json
 import os
+import queue
 import sys
 import time
 import subprocess
@@ -26,12 +30,19 @@ from urllib.parse import quote
 
 import app_storage
 import roblox_fps
+import roblox_servers
 from app_storage import ACCOUNTS_FORMAT_VERSION
 from security import SecurityError, decrypt_secret, encrypt_secret, is_encryption_available
 
 try:
+    import winreg
+except ImportError:
+    winreg = None  # type: ignore[assignment]
+
+try:
     import win32event
     import win32api
+    import win32crypt
     import winerror
     _WIN32_AVAILABLE = True
 except ImportError:
@@ -277,23 +288,34 @@ def _get_auth_ticket_once(roblosecurity: str, *, debug: bool = False, attempt: i
 # ---------------------------------------------------------------------------
 
 def find_roblox_launcher() -> str | None:
-    """Busca el launcher de Roblox en las ubicaciones conocidas de Windows."""
-    candidates = [
-        ROBLOX_LAUNCHER,
-        # Versiones instaladas en carpetas versionadas
-        *[
-            os.path.join(root, f)
-            for root, dirs, files in os.walk(
-                os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
-            )
-            if os.path.isdir(os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions"))
-            for f in files
-            if f == "RobloxPlayerBeta.exe"
-        ],
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
+    """Busca el ejecutable más reciente de Roblox en Windows."""
+    if winreg is not None and sys.platform == "win32":
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\ROBLOX Corporation\Environments\roblox-player",
+            ) as key:
+                client_exe, _ = winreg.QueryValueEx(key, "clientExe")
+                if isinstance(client_exe, str) and os.path.isfile(client_exe):
+                    return client_exe
+        except OSError:
+            pass
+
+    versions_dir = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
+    beta_exes: list[str] = []
+    if os.path.isdir(versions_dir):
+        for root, _dirs, files in os.walk(versions_dir):
+            if "RobloxPlayerBeta.exe" in files:
+                full = os.path.join(root, "RobloxPlayerBeta.exe")
+                if os.path.isfile(full):
+                    beta_exes.append(full)
+
+    if beta_exes:
+        beta_exes.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        return beta_exes[0]
+
+    if os.path.isfile(ROBLOX_LAUNCHER):
+        return ROBLOX_LAUNCHER
     return None
 
 
@@ -390,7 +412,7 @@ def _fetch_csrf_token(session: requests.Session, cookies: dict, method_url: str)
 def follow_roblox_user(roblosecurity: str, target_user_id: int, *, debug: bool = False) -> tuple[str, str | None]:
     """
     Sigue a un usuario con la cookie dada.
-    Devuelve (estado, mensaje) donde estado es 'ok', 'already' o 'fail'.
+    Devuelve (estado, mensaje) donde estado es 'ok', 'already', 'challenge' o 'fail'.
     """
     cookies = {".ROBLOSECURITY": roblosecurity}
     url = f"https://friends.roblox.com/v1/users/{target_user_id}/follow"
@@ -411,6 +433,9 @@ def follow_roblox_user(roblosecurity: str, target_user_id: int, *, debug: bool =
     if resp.status_code == 200:
         return "ok", None
 
+    challenge_type = resp.headers.get("rblx-challenge-type") or resp.headers.get("Rblx-Challenge-Type")
+    challenge_id = resp.headers.get("rblx-challenge-id") or resp.headers.get("Rblx-Challenge-Id")
+
     try:
         payload = resp.json()
         errors = payload.get("errors") or []
@@ -418,7 +443,12 @@ def follow_roblox_user(roblosecurity: str, target_user_id: int, *, debug: bool =
             if not isinstance(err, dict):
                 continue
             message = str(err.get("message", "")).lower()
-            if "already" in message or "follow" in message and "invalid" not in message:
+            if "challenge is required" in message:
+                return (
+                    "challenge",
+                    "Roblox requiere verificación anti-bot (Challenge/Captcha) en el navegador para seguir usuarios.",
+                )
+            if "already" in message or ("follow" in message and "invalid" not in message and "challenge" not in message):
                 return "already", None
     except ValueError:
         payload = None
@@ -426,6 +456,12 @@ def follow_roblox_user(roblosecurity: str, target_user_id: int, *, debug: bool =
     body = (resp.text or "").lower()
     if resp.status_code == 400 and "already" in body:
         return "already", None
+
+    if challenge_type or challenge_id or "challenge is required" in body:
+        return (
+            "challenge",
+            "Roblox requiere verificación anti-bot (Challenge/Captcha) en el navegador para seguir usuarios.",
+        )
 
     if resp.status_code == 403:
         return "fail", "No permitido (privacidad del usuario o cuenta)."
@@ -456,6 +492,7 @@ def follow_accounts_to_user(
     ok_names: list[str] = []
     already_names: list[str] = []
     fail_names: list[str] = []
+    challenge_msg: str | None = None
     total = len(accounts)
 
     for i, account in enumerate(accounts):
@@ -480,6 +517,12 @@ def follow_accounts_to_user(
         elif status == "already":
             already_names.append(name)
             prog = "already"
+        elif status == "challenge":
+            fail_names.append(name)
+            challenge_msg = msg
+            if on_progress:
+                on_progress(i + 1, total, name, "failed")
+            break
         else:
             fail_names.append(name)
             prog = "failed"
@@ -492,19 +535,36 @@ def follow_accounts_to_user(
     if on_progress and display_name:
         on_progress(total, total, display_name, "done")
 
+    if challenge_msg and not ok_names and not already_names:
+        return ok_names, already_names, fail_names, challenge_msg
+
     return ok_names, already_names, fail_names, None
 
 
 def compute_launch_delay(index: int, total: int, settings: dict | None = None) -> float:
-    """Espera entre lanzamientos. Tras N cuentas (default 3) usa delay configurable."""
+    """
+    Espera entre lanzamientos para evitar que dos instancias pisen RobloxCookies.dat
+    mientras Roblox canjea el ticket de autenticación (~4-5s en Roblox 0.747+).
+    """
     cfg = settings or app_storage.get_settings()
-    threshold = cfg.get("delay_after_accounts", 3)
-    delay_sec = float(cfg.get("launch_delay_sec", 3))
+    delay_sec = float(cfg.get("launch_delay_sec", 6))
     if index <= 0:
         return 0.0
-    if total > threshold:
-        return delay_sec
-    return 0.5
+    return max(5.5, delay_sec)
+
+
+def build_place_launcher_url(place_id: str, job_id: str | None = None) -> str:
+    """URL de PlaceLauncher para unirse a un place o a un servidor concreto (JobId)."""
+    base = "https://assetgame.roblox.com/game/PlaceLauncher.ashx"
+    if job_id:
+        return (
+            f"{base}?request=RequestGameJob&browserTrackerId=0"
+            f"&placeId={place_id}&gameId={job_id}&isPlayTogetherGame=false"
+        )
+    return (
+        f"{base}?request=RequestGame&browserTrackerId=0"
+        f"&placeId={place_id}&isPlayTogetherGame=false"
+    )
 
 
 def open_roblox_player_uri(uri: str) -> bool:
@@ -518,33 +578,351 @@ def open_roblox_player_uri(uri: str) -> bool:
         return False
 
 
-# Los handles se guardan aquí para que no sean garbage-collected
-# mientras el launcher esté abierto.
+# ---------------------------------------------------------------------------
+# Gestión de procesos de Roblox, System Tray y Singletons (Multi-Instancia)
+# ---------------------------------------------------------------------------
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [
+        ("Length", wintypes.USHORT),
+        ("MaximumLength", wintypes.USHORT),
+        ("Buffer", wintypes.LPWSTR),
+    ]
+
+
+def list_roblox_pids() -> list[int]:
+    """Devuelve la lista de PIDs de procesos RobloxPlayerBeta.exe activos."""
+    if sys.platform != "win32":
+        return []
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        if snap == wintypes.HANDLE(-1).value or not snap:
+            return []
+        pids: list[int] = []
+        try:
+            pe = _PROCESSENTRY32W()
+            pe.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+            if kernel32.Process32FirstW(snap, ctypes.byref(pe)):
+                while True:
+                    if pe.szExeFile.lower() == "robloxplayerbeta.exe":
+                        pids.append(int(pe.th32ProcessID))
+                    if not kernel32.Process32NextW(snap, ctypes.byref(pe)):
+                        break
+        finally:
+            kernel32.CloseHandle(snap)
+        return pids
+    except Exception:
+        return []
+
+
+def get_process_cmdline(pid: int) -> str | None:
+    """Obtiene la línea de comandos de un proceso usando NtQueryInformationProcess."""
+    if sys.platform != "win32":
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll")
+        h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            buf = ctypes.create_string_buffer(16384)
+            ret_len = wintypes.ULONG()
+            # ProcessCommandLineInformation = 60
+            status = ntdll.NtQueryInformationProcess(h, 60, buf, len(buf), ctypes.byref(ret_len))
+            if status != 0:
+                return None
+            ustr = _UNICODE_STRING.from_buffer(buf)
+            if not ustr.Buffer or ustr.Length == 0:
+                return ""
+            return ustr.Buffer[: ustr.Length // 2]
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def disable_roblox_tray_autostart() -> None:
+    """
+    Elimina la entrada de auto-inicio '--launch-to-tray' de Roblox en el Registro
+    para evitar que Roblox bloquee los singletons en segundo plano al iniciar Windows.
+    """
+    if winreg is None or sys.platform != "win32":
+        return
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        ) as key:
+            val, _ = winreg.QueryValueEx(key, "RobloxPlayerBeta")
+            if isinstance(val, str) and "--launch-to-tray" in val.lower():
+                winreg.DeleteValue(key, "RobloxPlayerBeta")
+    except OSError:
+        pass
+
+
+def _terminate_pid(pid: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+        if h:
+            try:
+                ok = bool(kernel32.TerminateProcess(h, 0))
+                if ok:
+                    return True
+            finally:
+                kernel32.CloseHandle(h)
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=5,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def kill_roblox_tray_processes(debug: bool = False) -> int:
+    """
+    Termina procesos de RobloxPlayerBeta.exe que corren en modo bandeja (--launch-to-tray)
+    y que acaparan ROBLOX_singletonEvent / ROBLOX_singletonMutex en segundo plano.
+    """
+    if sys.platform != "win32":
+        return 0
+    disable_roblox_tray_autostart()
+    killed: list[int] = []
+    for pid in list_roblox_pids():
+        cmd = get_process_cmdline(pid)
+        if cmd is not None and "--launch-to-tray" in cmd.lower():
+            if debug:
+                print(f"[singleton] Cerrando proceso de bandeja de Roblox (PID {pid})...")
+            if _terminate_pid(pid):
+                killed.append(pid)
+
+    if killed:
+        deadline = time.time() + 1.5
+        while time.time() < deadline:
+            remaining = set(list_roblox_pids()) & set(killed)
+            if not remaining:
+                break
+            time.sleep(0.05)
+    return len(killed)
+
+
+def close_all_roblox_processes() -> int:
+    """Termina todos los procesos RobloxPlayerBeta.exe activos y espera su cierre."""
+    pids = list_roblox_pids()
+    if not pids:
+        return 0
+    for pid in pids:
+        _terminate_pid(pid)
+    deadline = time.time() + 2.5
+    while time.time() < deadline:
+        if not list_roblox_pids():
+            break
+        time.sleep(0.05)
+    return len(pids)
+
+
+# Hilo dedicado y persistente para mantener la propiedad (ownership) de los Mutex de Windows.
+# En Windows, un Mutex pertenece al hilo que lo adquiere; si ese hilo termina, el sistema
+# operativo lo marca como WAIT_ABANDONED (0x80) y Roblox lo toma inmediatamente.
 _singleton_handles: list = []
+_singleton_handles_map: dict[str, int] = {}
+_singleton_event_locked: bool = False
 _singleton_lock = threading.Lock()
+_singleton_cmd_queue: "queue.Queue[tuple[str, queue.Queue]] | None" = None
+_singleton_thread: threading.Thread | None = None
+
+
+def _singleton_thread_loop(cmd_q: "queue.Queue[tuple[str, queue.Queue]]") -> None:
+    global _singleton_event_locked
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+
+    while True:
+        cmd, reply_q = cmd_q.get()
+        if cmd == "acquire":
+            kill_roblox_tray_processes()
+            for name in ("ROBLOX_singletonMutex", "ROBLOX_singletonEvent"):
+                existing = _singleton_handles_map.get(name, 0)
+                if existing:
+                    # Asegurar que este hilo sea el propietario si estaba libre/abandonado
+                    kernel32.WaitForSingleObject(existing, 0)
+                    continue
+                ctypes.set_last_error(0)
+                h = kernel32.CreateMutexW(None, True, name)
+                err = ctypes.get_last_error()
+                if h:
+                    if err == 183:  # ERROR_ALREADY_EXISTS
+                        kernel32.WaitForSingleObject(h, 0)
+                    _singleton_handles_map[name] = int(h)
+                    if int(h) not in _singleton_handles:
+                        _singleton_handles.append(int(h))
+
+            _singleton_event_locked = (
+                "ROBLOX_singletonMutex" in _singleton_handles_map
+                and "ROBLOX_singletonEvent" in _singleton_handles_map
+            )
+            reply_q.put(_singleton_event_locked)
+
+
+def _ensure_singleton_thread() -> "queue.Queue[tuple[str, queue.Queue]]":
+    global _singleton_cmd_queue, _singleton_thread
+    with _singleton_lock:
+        if _singleton_thread is None or not _singleton_thread.is_alive() or _singleton_cmd_queue is None:
+            _singleton_cmd_queue = queue.Queue()
+            _singleton_thread = threading.Thread(
+                target=_singleton_thread_loop,
+                args=(_singleton_cmd_queue,),
+                name="RobloxSingletonHolder",
+                daemon=True,
+            )
+            _singleton_thread.start()
+        return _singleton_cmd_queue
 
 
 def grab_roblox_singleton() -> bool:
     """
-    Crea o toma los objetos del sistema con los que Roblox detecta si ya
-    hay una instancia corriendo (ROBLOX_singletonMutex y ROBLOX_singletonEvent).
-    Al tenerlos nosotros primero, Roblox no puede usarlos para impedir la
-    segunda instancia.
-    Devuelve True si pywin32 está disponible, False si no.
+    Toma y mantiene en un hilo persistente los objetos ROBLOX_singletonMutex y
+    ROBLOX_singletonEvent como Mutexes para impedir que Roblox cierre otras instancias.
+    Devuelve True si ambos singletons quedaron bloqueados por este proceso.
     """
-    if not _WIN32_AVAILABLE:
+    if sys.platform != "win32":
+        return False
+    try:
+        cmd_q = _ensure_singleton_thread()
+        reply_q: queue.Queue = queue.Queue()
+        cmd_q.put(("acquire", reply_q))
+        return bool(reply_q.get(timeout=5.0))
+    except Exception:
         return False
 
-    with _singleton_lock:
-        for name in ("ROBLOX_singletonMutex", "ROBLOX_singletonEvent"):
-            try:
-                h = win32event.CreateMutex(None, False, name)
-                # Si ya existe (ERROR_ALREADY_EXISTS) igual guardamos el handle
-                # para que permanezca abierto durante todo el proceso.
-                _singleton_handles.append(h)
-            except Exception:
-                pass
-    return True
+
+def is_singleton_locked() -> bool:
+    """Devuelve True si ROBLOX_singletonMutex y ROBLOX_singletonEvent están bloqueados."""
+    return bool(_singleton_event_locked)
+
+
+def has_blocking_roblox_process() -> bool:
+    """
+    Devuelve True si hay un RobloxPlayerBeta.exe abierto ANTES que este lanzador
+    que mantiene ROBLOX_singletonEvent como Event e impide el modo multi-cuenta.
+    """
+    if grab_roblox_singleton():
+        return False
+    return len(list_roblox_pids()) > 0
+
+
+def ensure_roblox_singleton(*, force_close_existing: bool = False) -> bool:
+    """
+    Asegura que los singletons de Roblox estén bloqueados por este proceso.
+    Si force_close_existing=True, cierra cualquier Roblox previo para poder tomarlos.
+    """
+    if grab_roblox_singleton():
+        return True
+    if force_close_existing:
+        close_all_roblox_processes()
+        time.sleep(0.2)
+        return grab_roblox_singleton()
+    return False
+
+
+def sync_roblox_cookies_dat(roblosecurity: str, *, debug: bool = False) -> bool:
+    """
+    Actualiza %LOCALAPPDATA%\\Roblox\\LocalStorage\\RobloxCookies.dat con la cookie
+    .ROBLOSECURITY de la cuenta que se va a lanzar (cifrada con DPAPI).
+    En Roblox 0.747+, DataModelStarterModule lee RobloxCookies.dat al arrancar (~0.8s)
+    antes de que termine el canje de +gameinfo:{ticket} (~3.7s). Si RobloxCookies.dat
+    tenía la cookie de la cuenta anterior, la nueva instancia se une con la cuenta equivocada.
+    """
+    if not _WIN32_AVAILABLE or sys.platform != "win32":
+        return False
+    cookie = roblosecurity.strip()
+    if not cookie:
+        return False
+
+    cookies_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\LocalStorage\RobloxCookies.dat")
+    local_storage_dir = os.path.dirname(cookies_path)
+    try:
+        os.makedirs(local_storage_dir, exist_ok=True)
+    except OSError:
+        return False
+
+    kept_entries: list[str] = []
+    if os.path.isfile(cookies_path):
+        try:
+            with open(cookies_path, "r", encoding="utf-8") as f:
+                raw_json = json.load(f)
+            b64_data = raw_json.get("CookiesData", "")
+            if b64_data:
+                _, dec_bytes = win32crypt.CryptUnprotectData(
+                    base64.b64decode(b64_data), None, None, None, 0
+                )
+                text = dec_bytes.decode("utf-8", errors="replace")
+                for part in text.split("; "):
+                    part_s = part.strip()
+                    if not part_s:
+                        continue
+                    cols = part_s.split("\t")
+                    # Descartar .ROBLOSECURITY y RBXEventTrackerV2 de la cuenta anterior
+                    if len(cols) >= 6 and cols[5] in (".ROBLOSECURITY", "RBXEventTrackerV2"):
+                        continue
+                    kept_entries.append(part_s)
+        except Exception:
+            kept_entries = []
+
+    expiry = int(time.time()) + 31536000
+    kept_entries.append(
+        f"#HttpOnly_.roblox.com\tTRUE\t/\tTRUE\t{expiry}\t.ROBLOSECURITY\t{cookie}"
+    )
+    new_text = "; ".join(kept_entries)
+    try:
+        enc_bytes = win32crypt.CryptProtectData(
+            new_text.encode("utf-8"), "", None, None, None, 0
+        )
+        payload = {
+            "CookiesVersion": "1",
+            "CookiesData": base64.b64encode(enc_bytes).decode("ascii"),
+        }
+        tmp_path = cookies_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, separators=(",", ":"))
+        os.replace(tmp_path, cookies_path)
+        if debug:
+            print("[cookies] RobloxCookies.dat sincronizado para la cuenta actual.")
+        return True
+    except Exception as exc:
+        if debug:
+            print(f"[cookies] No se pudo actualizar RobloxCookies.dat: {exc}")
+        return False
 
 
 def launch_account(
@@ -552,6 +930,7 @@ def launch_account(
     roblox_exe: str,
     *,
     place_id: str,
+    job_id: str | None = None,
     delay: float = 0.0,
     debug: bool = False,
     max_retries: int = 2,
@@ -570,8 +949,15 @@ def launch_account(
         )
         return False
 
-    if delay:
+    if delay > 0:
         time.sleep(delay)
+
+    singleton_ok = grab_roblox_singleton()
+    if debug:
+        if singleton_ok:
+            print(f"[{name}] singleton mutex/event bloqueados OK.")
+        else:
+            print(f"[{name}] AVISO: singleton no pudo bloquearse (¿Roblox ya estaba abierto antes?).")
 
     print(f"[{name}] Obteniendo auth ticket...")
     ticket = get_auth_ticket(cookie, debug=debug, max_retries=max_retries)
@@ -582,10 +968,7 @@ def launch_account(
         )
         return False
 
-    place_launcher_url = (
-        f"https://assetgame.roblox.com/game/PlaceLauncher.ashx"
-        f"?request=RequestGame&browserTrackerId=0&placeId={place_id}&isPlayTogetherGame=false"
-    )
+    place_launcher_url = build_place_launcher_url(place_id, job_id)
     encoded_place_launcher_url = quote(place_launcher_url, safe="")
 
     roblox_url = (
@@ -600,18 +983,28 @@ def launch_account(
         if debug:
             print(f"[{name}] Lanzando via protocolo roblox-player (ticket oculto).")
 
-        singleton_ok = grab_roblox_singleton()
-        if debug:
-            if singleton_ok:
-                print(f"[{name}] singleton mutex/event tomados OK.")
-            else:
-                print(f"[{name}] AVISO: pywin32 no disponible, singleton no bloqueado.")
-
-        time.sleep(0.5)
+        sync_roblox_cookies_dat(cookie, debug=debug)
+        pids_before = set(list_roblox_pids())
 
         opened = open_roblox_player_uri(roblox_url)
         if not opened:
             subprocess.Popen([roblox_exe, roblox_url])
+
+        # Esperar a que el nuevo proceso RobloxPlayerBeta.exe aparezca y lea RobloxCookies.dat
+        spawn_deadline = time.time() + 3.5
+        spawned_pid: int | None = None
+        while time.time() < spawn_deadline:
+            new_pids = set(list_roblox_pids()) - pids_before
+            if new_pids:
+                spawned_pid = next(iter(new_pids))
+                break
+            time.sleep(0.1)
+
+        if spawned_pid is not None:
+            # Dar margen para que el nuevo proceso complete loadAuthTokenFromDisk (~0.9s)
+            time.sleep(1.5)
+        else:
+            time.sleep(1.0)
 
         print(f"[{name}] Instancia iniciada correctamente.")
         return True
@@ -626,6 +1019,7 @@ def launch_accounts(
     *,
     place_id: str,
     fps_limit: int = 0,
+    auto_join: dict | None = None,
     debug: bool = False,
     settings: dict | None = None,
     on_progress=None,
@@ -641,6 +1035,48 @@ def launch_accounts(
     fail_names: list[str] = []
     total = len(accounts)
     fps_limit = roblox_fps.normalize_fps_limit(fps_limit)
+    join_cfg = roblox_servers.normalize_auto_join(auto_join)
+
+    shared_job_id: str | None = None
+    if join_cfg.get("enabled") and str(place_id).strip() not in ("", "0"):
+        max_wait_sec = max(0, min(600, int(cfg.get("auto_join_wait_sec", 60) or 60)))
+        poll_sec = max(2, min(20, int(cfg.get("auto_join_poll_sec", 5) or 5)))
+        deadline = time.time() + max_wait_sec
+        attempt = 0
+        last_err: str | None = None
+
+        while True:
+            attempt += 1
+            if on_progress:
+                on_progress(0, total, "", f"finding_server (try {attempt})")
+
+            shared_job_id, join_err = roblox_servers.find_best_job_id(
+                place_id,
+                join_cfg,
+                debug=debug,
+            )
+            if shared_job_id:
+                break
+
+            last_err = join_err or "No se pudo elegir servidor."
+            now = time.time()
+            if now >= deadline:
+                break
+
+            # Si el usuario no fijó límite de jugadores, no tiene sentido reintentar.
+            if int(join_cfg.get("max_players", 0) or 0) <= 0:
+                break
+
+            remaining = int(max(0, deadline - now))
+            if debug:
+                print(f"[auto-join] intento {attempt} sin éxito: {last_err}. Reintentando en {poll_sec}s...")
+            if on_progress:
+                on_progress(0, total, "", f"waiting_server ({remaining}s left)")
+            time.sleep(poll_sec)
+
+        if not shared_job_id:
+            reason = last_err or "No se encontró servidor compatible."
+            print(f"[auto-join] AVISO: {reason} — uniendo a servidor aleatorio.")
 
     for i, account in enumerate(accounts):
         name = account["name"]
@@ -657,6 +1093,7 @@ def launch_accounts(
             account,
             roblox_exe,
             place_id=place_id,
+            job_id=shared_job_id,
             delay=delay,
             debug=debug,
             max_retries=max_retries,

@@ -12,13 +12,18 @@ ACCOUNTS_FORMAT_VERSION = 3
 MAX_PLACE_HISTORY = 20
 
 DEFAULT_SETTINGS = {
-    "launch_delay_sec": 3,
-    "delay_after_accounts": 3,
+    "launch_delay_sec": 6,
+    "delay_after_accounts": 1,
     "auth_max_retries": 2,
     "use_family_place_id": True,
     "validate_before_launch": True,
     "hide_usernames": False,
     "debug": False,
+    "auto_join_enabled": False,
+    "auto_join_max_players": 0,
+    "auto_join_top_n": 3,
+    "auto_join_wait_sec": 60,
+    "auto_join_poll_sec": 5,
 }
 
 
@@ -55,9 +60,21 @@ def _normalize_settings(raw: dict | None) -> dict:
             settings["hide_usernames"] = bool(raw["hide_usernames"])
         if "debug" in raw:
             settings["debug"] = bool(raw["debug"])
+        if "auto_join_enabled" in raw:
+            settings["auto_join_enabled"] = bool(raw["auto_join_enabled"])
+        for key in ("auto_join_max_players", "auto_join_top_n", "auto_join_wait_sec", "auto_join_poll_sec"):
+            if key in raw:
+                try:
+                    settings[key] = int(raw[key])
+                except (TypeError, ValueError):
+                    pass
     settings["auth_max_retries"] = max(1, min(5, settings["auth_max_retries"]))
     settings["launch_delay_sec"] = max(0, min(60, settings["launch_delay_sec"]))
     settings["delay_after_accounts"] = max(1, min(20, settings["delay_after_accounts"]))
+    settings["auto_join_max_players"] = max(0, min(200, settings.get("auto_join_max_players", 0)))
+    settings["auto_join_top_n"] = max(1, min(10, settings.get("auto_join_top_n", 3)))
+    settings["auto_join_wait_sec"] = max(0, min(600, settings.get("auto_join_wait_sec", 60)))
+    settings["auto_join_poll_sec"] = max(2, min(20, settings.get("auto_join_poll_sec", 5)))
     return settings
 
 
@@ -79,7 +96,30 @@ def _normalize_family(entry: object) -> dict | None:
         except (TypeError, ValueError):
             fps_limit = 0
     fps_limit = max(0, min(240, fps_limit))
-    return {"name": name, "place_id": place_id, "accounts": accounts, "fps_limit": fps_limit}
+    auto_join_enabled = bool(entry.get("auto_join_enabled", False))
+    auto_join_max_players = 0
+    auto_join_top_n = 3
+    if "auto_join_max_players" in entry:
+        try:
+            auto_join_max_players = int(entry.get("auto_join_max_players", 0))
+        except (TypeError, ValueError):
+            auto_join_max_players = 0
+    if "auto_join_top_n" in entry:
+        try:
+            auto_join_top_n = int(entry.get("auto_join_top_n", 3))
+        except (TypeError, ValueError):
+            auto_join_top_n = 3
+    auto_join_max_players = max(0, min(200, auto_join_max_players))
+    auto_join_top_n = max(1, min(10, auto_join_top_n))
+    return {
+        "name": name,
+        "place_id": place_id,
+        "accounts": accounts,
+        "fps_limit": fps_limit,
+        "auto_join_enabled": auto_join_enabled,
+        "auto_join_max_players": auto_join_max_players,
+        "auto_join_top_n": auto_join_top_n,
+    }
 
 
 def read_raw_app_data() -> object | None:
@@ -337,6 +377,25 @@ def resolve_family_accounts(family: dict, all_accounts: list[dict]) -> list[dict
         if name in by_name:
             resolved.append(by_name[name])
     return resolved
+
+
+def auto_join_from_settings(settings: dict | None = None) -> dict:
+    cfg = _normalize_settings(settings or get_settings())
+    return {
+        "enabled": bool(cfg.get("auto_join_enabled", False)),
+        "max_players": int(cfg.get("auto_join_max_players", 0) or 0),
+        "top_n": int(cfg.get("auto_join_top_n", 3) or 3),
+    }
+
+
+def auto_join_from_family(family: dict | None) -> dict:
+    if not isinstance(family, dict):
+        return auto_join_from_settings()
+    return {
+        "enabled": bool(family.get("auto_join_enabled", False)),
+        "max_players": int(family.get("auto_join_max_players", 0) or 0),
+        "top_n": int(family.get("auto_join_top_n", 3) or 3),
+    }
 
 
 def update_account_cookie(name: str, cookie: str, *, roblox_username: str | None = None) -> bool:

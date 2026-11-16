@@ -2,11 +2,11 @@
 setlocal
 cd /d "%~dp0"
 
-set VERSION=3.0.1
+set VERSION=3.0.3
 set OUT=release\MoreRobAccounts-v%VERSION%-win64
 
 echo === Compilando aplicacion (sin consola) ===
-python -m PyInstaller --noconfirm MoreRobAccountsUI.spec
+py -3.13 -m PyInstaller --noconfirm MoreRobAccountsUI.spec
 if errorlevel 1 (
     echo Error al compilar.
     pause

@@ -1,8 +1,8 @@
 {
   "version": 3,
   "settings": {
-    "launch_delay_sec": 3,
-    "delay_after_accounts": 3,
+    "launch_delay_sec": 6,
+    "delay_after_accounts": 1,
     "auth_max_retries": 2
   },
   "place_history": [],

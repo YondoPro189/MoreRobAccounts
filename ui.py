@@ -6,6 +6,7 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+import anti_afk
 import app_storage
 import launcher
 import notifications
@@ -263,9 +264,34 @@ class MoreRobAccountsUI(tk.Tk):
         self.launch_family_btn.grid(row=0, column=1, sticky="ew", padx=4)
         theme.arrow_button(row5, command=self._show_family_picker).grid(row=0, column=2, padx=(4, 0))
 
+        row6 = tk.Frame(right, bg=theme.BG)
+        row6.grid(row=7, column=0, sticky="ew", pady=(10, 0))
+        theme.label(row6, text="Anti-AFK").pack(side="left")
+        self.anti_afk_var = tk.BooleanVar(value=False)
+        theme.ToggleSwitch(row6, self.anti_afk_var, command=self._toggle_anti_afk).pack(side="left", padx=(10, 0))
+        self._anti_afk_status = tk.StringVar(value="")
+        theme.label(row6, textvariable=self._anti_afk_status, fg=theme.MUTED, font=theme.FONT_SM).pack(side="left", padx=(8, 0))
+
     def _on_family_toggle(self) -> None:
         self.settings["use_family_place_id"] = bool(self.use_family_place_var.get())
         app_storage.save_settings(self.settings)
+
+    def _toggle_anti_afk(self) -> None:
+        if self.anti_afk_var.get():
+            if not anti_afk.is_available():
+                self.anti_afk_var.set(False)
+                messagebox.showwarning("Anti-AFK", "pywin32 no está disponible.")
+                return
+
+            def on_tick(n: int) -> None:
+                msg = f"↻ {n} ventana(s)" if n > 0 else "↻ sin ventanas"
+                self.after(0, lambda m=msg: self._anti_afk_status.set(m))
+
+            anti_afk.start(on_tick=on_tick)
+            self._anti_afk_status.set("activo")
+        else:
+            anti_afk.stop()
+            self._anti_afk_status.set("")
 
     def _show_family_picker(self) -> None:
         families = app_storage.get_families()
@@ -478,9 +504,11 @@ class MoreRobAccountsUI(tk.Tk):
 
     def _check_roblox_installed(self) -> None:
         ok, _path = launcher.is_roblox_installed()
+        singleton_ok = launcher.grab_roblox_singleton()
         n = len(self.accounts)
         if ok:
-            self.status_var.set(f"{n} account(s) · Roblox OK")
+            multi_status = " · Multi-instance OK" if singleton_ok else " · Close active Roblox first"
+            self.status_var.set(f"{n} account(s) · Roblox OK{multi_status}")
         else:
             self.status_var.set("Roblox not detected")
             if messagebox.askyesno(
@@ -860,13 +888,20 @@ class MoreRobAccountsUI(tk.Tk):
             messagebox.showwarning("Invalid accounts", "Skipped (expired session):\n" + ", ".join(skipped))
         return valid
 
-    def _start_worker(self, accounts: list[dict], place_id: str | None = None, fps_limit: int = 0) -> None:
+    def _start_worker(
+        self,
+        accounts: list[dict],
+        place_id: str | None = None,
+        fps_limit: int = 0,
+        auto_join: dict | None = None,
+    ) -> None:
         place_id = place_id or self.place_var.get().strip() or "0"
         app_storage.add_place_to_history(place_id)
         self._refresh_place_history()
         self._persist_launch_settings()
         settings = app_storage.get_settings()
         debug = bool(self.debug_var.get())
+        auto_join_cfg = auto_join or app_storage.auto_join_from_settings(settings)
 
         ok_roblox, roblox_exe = launcher.is_roblox_installed()
         if not ok_roblox or not roblox_exe:
@@ -877,6 +912,23 @@ class MoreRobAccountsUI(tk.Tk):
         if not accounts:
             messagebox.showwarning("Launch", "No accounts to launch.")
             return
+
+        if launcher.has_blocking_roblox_process():
+            if messagebox.askyesno(
+                "Multi-cuenta bloqueado por Roblox previo",
+                "Ya había una ventana de Roblox abierta antes de iniciar este programa, "
+                "lo que impide abrir múltiples cuentas a la vez.\n\n"
+                "¿Deseas cerrar las ventanas actuales de Roblox para activar el modo multi-cuenta y continuar?",
+            ):
+                if not launcher.ensure_roblox_singleton(force_close_existing=True):
+                    messagebox.showerror(
+                        "Multi-cuenta",
+                        "No se pudo liberar el bloqueo de instancia única de Roblox. "
+                        "Cierra Roblox desde el Administrador de tareas e inténtalo de nuevo.",
+                    )
+                    return
+            elif len(accounts) > 1:
+                return
 
         total = len(accounts)
         fps_limit = roblox_fps.normalize_fps_limit(fps_limit)
@@ -907,6 +959,7 @@ class MoreRobAccountsUI(tk.Tk):
                     roblox_exe,
                     place_id=place_id,
                     fps_limit=fps_limit,
+                    auto_join=auto_join_cfg,
                     debug=debug,
                     settings=settings,
                     on_progress=on_progress,
@@ -975,7 +1028,8 @@ class MoreRobAccountsUI(tk.Tk):
                 return
 
         fps_limit = int(family.get("fps_limit", 0) or 0)
-        self._start_worker(accounts, place_id=place_id, fps_limit=fps_limit)
+        auto_join = app_storage.auto_join_from_family(family)
+        self._start_worker(accounts, place_id=place_id, fps_limit=fps_limit, auto_join=auto_join)
 
 
 if __name__ == "__main__":

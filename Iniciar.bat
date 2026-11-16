@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" pythonw ui.py
+start "" C:\Windows\pyw.exe -3.13 ui.py

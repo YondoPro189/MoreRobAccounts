@@ -7,7 +7,7 @@ REM Puedes: editar aqui, o antes en CMD: set GITHUB_USER=tuusuario
 if not defined GITHUB_USER set GITHUB_USER=YondoPro189
 if not "%~1"=="" set GITHUB_USER=%~1
 set REPO_NAME=MoreRobAccounts
-set VERSION=3.0.1
+set VERSION=3.0.3
 set TAG=v%VERSION%
 
 set ZIP=release\MoreRobAccounts-v%VERSION%-win64.zip
@@ -109,7 +109,7 @@ gh release view %TAG% >nul 2>&1
 if errorlevel 1 (
     gh release create %TAG% "%ZIP%" ^
         --title "MoreRobAccounts v%VERSION%" ^
-        --notes "v3.0.1: alias como etiqueta breve (sin renombrar cuenta), categorias en tabla, Add Account corregido, ventana Create Family completa."
+        --notes "v3.0.3: reparado modo multi-cuenta para Roblox 0.747+ (bloqueo persistente de singletons y cierre de modo bandeja --launch-to-tray), aislamiento de sesion en RobloxCookies.dat, Anti-AFK, Smart Auto-Join y limite de FPS por familia."
 ) else (
     echo La release %TAG% ya existe. Subiendo/actualizando el ZIP...
     gh release upload %TAG% "%ZIP%" --clobber

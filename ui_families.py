@@ -105,8 +105,8 @@ class CreateFamilyDialog(tk.Toplevel):
         self.existing_names = existing_names
         self.on_created = on_created
         self.title("Create Family")
-        self.geometry("340x280")
-        self.minsize(320, 260)
+        self.geometry("380x390")
+        self.minsize(360, 360)
         self.configure(bg=theme.BG)
         self.resizable(False, False)
         self.transient(parent)
@@ -131,8 +131,26 @@ class CreateFamilyDialog(tk.Toplevel):
             row=5, column=0, sticky="ew", padx=14
         )
 
+        theme.label(self, text="Smart auto-join").grid(row=6, column=0, sticky="w", padx=14, pady=(10, 4))
+        self.auto_join_enabled_var = tk.BooleanVar(value=False)
+        theme.wire_checkbutton(self, "Enable", self.auto_join_enabled_var).grid(row=7, column=0, sticky="w", padx=14)
+
+        auto_row = tk.Frame(self, bg=theme.BG)
+        auto_row.grid(row=8, column=0, sticky="w", padx=14, pady=(6, 0))
+        theme.label(auto_row, text="Max players").pack(side="left")
+        self.auto_join_max_players_var = tk.StringVar(value="0")
+        theme.entry(auto_row, textvariable=self.auto_join_max_players_var, width=4).pack(side="left", padx=(8, 6))
+        theme.label(auto_row, text="(0 = any)").pack(side="left")
+
+        top_row = tk.Frame(self, bg=theme.BG)
+        top_row.grid(row=9, column=0, sticky="w", padx=14, pady=(6, 0))
+        theme.label(top_row, text="Random from top").pack(side="left")
+        self.auto_join_top_n_var = tk.StringVar(value="3")
+        theme.entry(top_row, textvariable=self.auto_join_top_n_var, width=4).pack(side="left", padx=(8, 6))
+        theme.label(top_row, text="lowest-pop servers").pack(side="left")
+
         row = tk.Frame(self, bg=theme.BG)
-        row.grid(row=6, column=0, sticky="w", padx=14, pady=(16, 14))
+        row.grid(row=10, column=0, sticky="w", padx=14, pady=(16, 14))
         theme.button(row, text="Create", command=self._create).pack(side="left", padx=(0, 8))
         theme.button(row, text="Cancel", command=self.destroy).pack(side="left")
 
@@ -146,7 +164,23 @@ class CreateFamilyDialog(tk.Toplevel):
             return
         place_id = self.place_var.get().strip() or "0"
         fps_limit = 0 if self.fps_var.get() == "Default" else roblox_fps.normalize_fps_limit(self.fps_var.get())
-        self.on_created({"name": name, "place_id": place_id, "accounts": [], "fps_limit": fps_limit})
+        try:
+            auto_max = max(0, min(200, int(self.auto_join_max_players_var.get().strip() or "0")))
+            auto_top = max(1, min(10, int(self.auto_join_top_n_var.get().strip() or "3")))
+        except ValueError:
+            messagebox.showwarning("Create Family", "Max players / top must be numeric.", parent=self)
+            return
+        self.on_created(
+            {
+                "name": name,
+                "place_id": place_id,
+                "accounts": [],
+                "fps_limit": fps_limit,
+                "auto_join_enabled": bool(self.auto_join_enabled_var.get()),
+                "auto_join_max_players": auto_max,
+                "auto_join_top_n": auto_top,
+            }
+        )
         self.destroy()
 
 
@@ -156,8 +190,8 @@ class EditFamilyDialog(tk.Toplevel):
         self.family = family
         self.on_saved = on_saved
         self.title("Edit Family")
-        self.geometry("340x240")
-        self.minsize(320, 220)
+        self.geometry("380x360")
+        self.minsize(360, 320)
         self.configure(bg=theme.BG)
         self.resizable(False, False)
         self.transient(parent)
@@ -175,6 +209,24 @@ class EditFamilyDialog(tk.Toplevel):
             fill="x", padx=14
         )
 
+        theme.label(self, text="Smart auto-join").pack(anchor="w", padx=14, pady=(8, 4))
+        self.auto_join_enabled_var = tk.BooleanVar(value=bool(family.get("auto_join_enabled", False)))
+        theme.wire_checkbutton(self, "Enable", self.auto_join_enabled_var).pack(anchor="w", padx=14)
+
+        auto_row = tk.Frame(self, bg=theme.BG)
+        auto_row.pack(anchor="w", padx=14, pady=(6, 0))
+        theme.label(auto_row, text="Max players").pack(side="left")
+        self.auto_join_max_players_var = tk.StringVar(value=str(int(family.get("auto_join_max_players", 0) or 0)))
+        theme.entry(auto_row, textvariable=self.auto_join_max_players_var, width=4).pack(side="left", padx=(8, 6))
+        theme.label(auto_row, text="(0 = any)").pack(side="left")
+
+        top_row = tk.Frame(self, bg=theme.BG)
+        top_row.pack(anchor="w", padx=14, pady=(6, 0))
+        theme.label(top_row, text="Random from top").pack(side="left")
+        self.auto_join_top_n_var = tk.StringVar(value=str(int(family.get("auto_join_top_n", 3) or 3)))
+        theme.entry(top_row, textvariable=self.auto_join_top_n_var, width=4).pack(side="left", padx=(8, 6))
+        theme.label(top_row, text="lowest-pop servers").pack(side="left")
+
         row = tk.Frame(self, bg=theme.BG)
         row.pack(fill="x", padx=14, pady=14)
         theme.button(row, text="Save", command=self._save).pack(side="left", padx=(0, 8))
@@ -184,6 +236,15 @@ class EditFamilyDialog(tk.Toplevel):
         self.family["place_id"] = self.place_var.get().strip() or "0"
         fps_raw = self.fps_var.get()
         self.family["fps_limit"] = 0 if fps_raw == "Default" else roblox_fps.normalize_fps_limit(fps_raw)
+        try:
+            self.family["auto_join_max_players"] = max(
+                0, min(200, int(self.auto_join_max_players_var.get().strip() or "0"))
+            )
+            self.family["auto_join_top_n"] = max(1, min(10, int(self.auto_join_top_n_var.get().strip() or "3")))
+        except ValueError:
+            messagebox.showwarning("Edit Family", "Max players / top must be numeric.", parent=self)
+            return
+        self.family["auto_join_enabled"] = bool(self.auto_join_enabled_var.get())
         families = app_storage.get_families()
         for i, fam in enumerate(families):
             if fam["name"] == self.family["name"]:
@@ -268,7 +329,11 @@ class FamilyManagerDialog(tk.Toplevel):
             n = len(fam.get("accounts", []))
             fps = int(fam.get("fps_limit", 0) or 0)
             fps_txt = roblox_fps.fps_label(fps)
-            line = f"{fam['name']}  ·  Place {fam.get('place_id', '0')}  ·  {fps_txt}  ·  {n} account(s)"
+            auto_join_txt = "AutoJoin ON" if fam.get("auto_join_enabled") else "AutoJoin OFF"
+            line = (
+                f"{fam['name']}  ·  Place {fam.get('place_id', '0')}  ·  "
+                f"{fps_txt}  ·  {auto_join_txt}  ·  {n} account(s)"
+            )
             self.listbox.insert(tk.END, line)
             if fam["name"] == sel_name:
                 restore_idx = i
@@ -295,10 +360,12 @@ class FamilyManagerDialog(tk.Toplevel):
         members = fam.get("accounts", [])
         fps = int(fam.get("fps_limit", 0) or 0)
         fps_txt = roblox_fps.fps_label(fps)
+        auto_join = bool(fam.get("auto_join_enabled", False))
+        auto_join_txt = "ON" if auto_join else "OFF"
         if members:
-            self.members_label.configure(text=f"FPS: {fps_txt}  ·  Accounts: " + ", ".join(members))
+            self.members_label.configure(text=f"FPS: {fps_txt}  ·  AutoJoin: {auto_join_txt}  ·  Accounts: " + ", ".join(members))
         else:
-            self.members_label.configure(text=f"FPS: {fps_txt}  ·  No accounts in this family yet.")
+            self.members_label.configure(text=f"FPS: {fps_txt}  ·  AutoJoin: {auto_join_txt}  ·  No accounts in this family yet.")
 
     def _edit_family(self) -> None:
         fam = self._selected_family()
